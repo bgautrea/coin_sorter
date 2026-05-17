@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coin-sorter"
+version = "0.1.0"
+description = "Computer vision pipeline for an automated coin sorter (Raspberry Pi 5 + Pi Camera + Pico belt controller)."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Brian Gautreau", email = "brian.gautreau@gmail.com" }]
+license = { text = "MIT" }
+keywords = ["coin", "sorter", "computer-vision", "raspberry-pi", "yolo", "onnx"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+# Pi-side runtime dependencies ONLY. No torch, no ultralytics here.
+# picamera2 is intentionally NOT listed — it ships with Raspberry Pi OS and
+# should be picked up from system site-packages (see README for venv setup).
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+    "onnxruntime>=1.17",
+    "pyserial>=3.5",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Installed on Colab / a training workstation, NOT on the Pi.
+train = [
+    "ultralytics>=8.2",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "onnx>=1.16",
+    "matplotlib>=3.8",
+    "scikit-learn>=1.4",
+    "pandas>=2.2",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+coin-capture = "coin_sorter.capture:main"
+coin-sorter = "coin_sorter.sorter:main"
+coin-train = "coin_sorter.train:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

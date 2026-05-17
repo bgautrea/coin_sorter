@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Project data — never commit captured frames or trained models.
+# Use /* (not /) so the !.gitkeep unignores can punch through and preserve
+# the empty directory structure for fresh clones.
+data/raw/*
+data/processed/*
+models/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!models/.gitkeep
+
+# Notebook scratch
+.ipynb_checkpoints/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local config overrides
+config.local.yaml
+*.local.yaml
+
+# Logs
+*.log
+logs/

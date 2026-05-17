@@ -1,0 +1,84 @@
+# Central configuration for the coin sorter.
+# Copy to config.local.yaml to override any value for a specific machine
+# (config.local.yaml is gitignored).
+
+camera:
+  # Picamera2 main stream resolution. 1280x720 is a sane default for the Pi
+  # Camera Module 3 — bump to 1536x864 or 1920x1080 if you need finer detail.
+  width: 1280
+  height: 720
+  framerate: 30
+  # Optional manual exposure / gain — null means auto.
+  exposure_us: null
+  analogue_gain: null
+  # Region of interest as fractions of the full frame: (x, y, w, h). Use this
+  # to crop down to just the belt region before classification. null = full frame.
+  roi: null
+
+serial:
+  port: /dev/ttyACM0
+  baud: 115200
+  timeout_s: 1.0
+  # How long to wait between reconnect attempts after a disconnect.
+  reconnect_delay_s: 1.0
+
+model:
+  # Path to the ONNX classifier (relative to repo root or absolute).
+  # If missing, infer.py falls back to a stub classifier so the pipeline
+  # can run end-to-end before training is complete.
+  path: models/coin_classifier.onnx
+  # Input size the model was trained at. Must match Colab `imgsz`.
+  input_size: 224
+  # Channel order the model expects. YOLO-cls expects RGB.
+  channel_order: rgb
+  # Normalization. YOLO ONNX exports embed scaling, so identity is correct
+  # for an Ultralytics ONNX export. Override for other model families.
+  mean: [0.0, 0.0, 0.0]
+  std: [1.0, 1.0, 1.0]
+
+classifier:
+  # Below this confidence, the coin is routed to the "reject" bin.
+  confidence_threshold: 0.80
+  # Class label order — MUST match the training data folder names sorted
+  # alphabetically (this is how YOLO-cls assigns class indices).
+  labels:
+    - dime
+    - nickel
+    - penny
+    - quarter
+    - reject
+
+sorter:
+  # Frames per second to actually run inference on (motion gating will
+  # further reduce this in practice).
+  inference_fps: 10
+  # Cooldown after sending a SORT command, so we do not double-classify
+  # the same coin.
+  cooldown_ms: 250
+
+dataset:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  # Train/val split fraction (val = 1 - train_frac).
+  train_frac: 0.85
+  # Random seed for the split.
+  seed: 1337
+
+training:
+  # Base model — see README for YOLOv8 vs YOLO11 discussion.
+  base_model: yolo11n-cls.pt
+  epochs: 50
+  batch: 64
+  imgsz: 224
+  # Where Ultralytics will write training runs (inside Colab).
+  project: runs
+  name: coin_classifier
+  # Optimizer / LR are left to Ultralytics defaults; override here if needed.
+  patience: 15
+
+# Where things go on Google Drive — used by scripts/zip_dataset.sh and the
+# Colab notebook to keep paths consistent.
+drive:
+  base_dir: MyDrive/coin_sorter
+  dataset_zip: MyDrive/coin_sorter/data.zip
+  model_dir: MyDrive/coin_sorter/models
