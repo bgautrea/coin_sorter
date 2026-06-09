@@ -146,17 +146,18 @@ converge. Aim for balanced counts (see "Class imbalance" below). Vary lighting
 and orientation across the run, and spot-check `data/raw/<label>/` afterwards —
 coins should be centred and filling the frame, with no empty-belt shots.
 
-### Optional: drive the belt from the capture tool (experimental)
+### Optional: drive the belt from the capture tool
 
 ```bash
 python -m coin_sorter.capture --label penny --count 250 --drive-belt --belt-speed 800
 ```
 
-This enables the motor and emulates continuous motion with repeated finite
-`MOVE` chunks (the firmware exposes only `MOVE`/`SPEED`, no free-run command).
-It assumes `MOVE` returns promptly; if your firmware blocks until the move
-finishes, drive the belt independently instead. Any Pico error is logged and
-capture continues belt-less. Default is **off**.
+This issues the firmware's non-blocking `RUN <hz>` command, which drives the
+stepper from a hardware timer so the belt runs continuously while we capture
+(the link stays responsive; the tool sends `STOP` on exit). Any Pico error is
+logged and capture continues belt-less. Default is **off**. Keep the speed
+gentle so coins don't blow past the dedup band between frames. The firmware
+lives in `firmware/main.py`.
 
 ## Training workflow (Colab)
 

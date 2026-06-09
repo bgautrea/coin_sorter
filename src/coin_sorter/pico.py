@@ -143,6 +143,19 @@ class Pico:
         """Set belt step rate in Hz."""
         self._send(f"SPEED {int(hz)}")
 
+    def run(self, hz: int) -> None:
+        """Start continuous (non-blocking) belt motion at `hz` steps/s.
+
+        Sign sets direction. The firmware drives the steps from a hardware
+        timer and returns immediately, so the link stays responsive (STATUS /
+        STOP work mid-run). Halt with :meth:`stop` (MOVE/SORT also halt it).
+        """
+        self._send(f"RUN {int(hz)}")
+
+    def stop(self) -> None:
+        """Stop continuous belt motion started by :meth:`run`."""
+        self._send("STOP")
+
     def enable(self) -> None:
         """Enable the motor driver."""
         self._send("ENABLE")

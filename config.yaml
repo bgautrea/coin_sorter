@@ -107,9 +107,10 @@ capture:
   # and (optionally) make the crop square and centred on the coin centroid.
   crop_pad_frac: 0.25
   crop_square: true
-  # Optional belt driving from the capture tool (experimental — firmware only
-  # exposes finite MOVE/SPEED, so continuous motion is emulated with repeated
-  # MOVE chunks). Default off; run the belt independently for the first session.
+  # Optional belt driving from the capture tool: the firmware's non-blocking
+  # RUN <hz> command keeps the belt moving while we capture. Default off; enable
+  # with --drive-belt or set true here. Keep the speed gentle so coins do not
+  # blow past the dedup band between frames.
   drive_belt: false
   belt_speed_hz: 800
   # Label whose capture bypasses the single-coin gate (debris/empty/multi-coin).

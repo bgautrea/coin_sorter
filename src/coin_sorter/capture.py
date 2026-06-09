@@ -356,11 +356,13 @@ def tight_square_crop(
 
 
 def maybe_open_belt(serial_cfg: dict, drive: bool, speed_hz: int):  # type: ignore[no-untyped-def]
-    """Best-effort: open the Pico, enable the driver and set speed.
+    """Best-effort: open the Pico and start the belt free-running at `speed_hz`.
 
-    Returns the open :class:`~coin_sorter.pico.Pico` or ``None``. Any failure
-    is logged and swallowed so capture proceeds belt-less (hand-feed, or run the
-    belt from an external driver).
+    Uses the firmware's non-blocking ``RUN`` command (timer-driven), so a single
+    call keeps the belt moving while we capture. Returns the open
+    :class:`~coin_sorter.pico.Pico` or ``None``. Any failure is logged and
+    swallowed so capture proceeds belt-less (hand-feed, or run the belt
+    externally).
     """
     if not drive:
         return None
@@ -378,42 +380,12 @@ def maybe_open_belt(serial_cfg: dict, drive: bool, speed_hz: int):  # type: igno
             log.warning("Belt: Pico did not respond to PING — capturing belt-less.")
             pico.close()
             return None
-        pico.enable()
-        pico.speed(int(speed_hz))
-        log.info("Belt driving enabled at %d Hz (experimental).", speed_hz)
+        pico.run(int(speed_hz))
+        log.info("Belt running continuously at %d Hz.", speed_hz)
         return pico
     except Exception as e:  # pragma: no cover - depends on hardware
         log.warning("Belt: could not start belt (%s) — capturing belt-less.", e)
         return None
-
-
-class _BeltRunner:
-    """Emulate continuous belt motion with repeated finite MOVE chunks.
-
-    Firmware only exposes finite ``MOVE`` / ``SPEED``; there is no documented
-    free-run command. We re-issue a MOVE shortly before the previous chunk is
-    expected to finish. This assumes MOVE returns promptly (motion runs async);
-    if your firmware blocks until the move completes, drive the belt externally
-    instead. Any error disables belt driving without stopping capture.
-    """
-
-    def __init__(self, pico, speed_hz: int, chunk_steps: int = 2000) -> None:  # type: ignore[no-untyped-def]
-        self.pico = pico
-        self.speed_hz = max(1, int(speed_hz))
-        self.chunk_steps = int(chunk_steps)
-        self._next_at = 0.0
-
-    def tick(self, now_s: float) -> None:
-        if self.pico is None or now_s < self._next_at:
-            return
-        try:
-            self.pico.move(self.chunk_steps)
-        except Exception as e:  # pragma: no cover - depends on hardware
-            log.warning("Belt MOVE failed (%s) — disabling belt driving.", e)
-            self.pico = None
-            return
-        # Re-issue at 90% of the expected chunk duration to keep motion smooth.
-        self._next_at = now_s + 0.9 * self.chunk_steps / self.speed_hz
 
 
 # --------------------------------------------------------------------------- #
@@ -524,7 +496,6 @@ def capture_loop(
 
     picam = _open_camera(width, height)
     belt = maybe_open_belt(serial_cfg or {}, drive_belt, belt_speed_hz)
-    runner = _BeltRunner(belt, belt_speed_hz) if belt is not None else None
 
     roi_px = resolve_roi(roi_cfg, width, height)
     roi_w = roi_px[2] if roi_px else width
@@ -551,8 +522,6 @@ def capture_loop(
 
         while count is None or written < count:
             now = time.monotonic()
-            if runner is not None:
-                runner.tick(now)
             frame = picam.capture_array()  # HxWx3, BGR-ordered (RGB888 config)
             roi = crop_roi(frame, roi_px)
 
@@ -596,6 +565,7 @@ def capture_loop(
             pass
         if belt is not None:
             try:
+                belt.stop()
                 belt.disable()
             except Exception:  # pragma: no cover
                 pass
@@ -641,7 +611,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--drive-belt",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Drive the belt via the Pico while capturing (experimental).",
+        help="Run the belt continuously via the Pico (RUN) while capturing.",
     )
     p.add_argument("--belt-speed", type=int, default=None, help="Belt step rate in Hz when --drive-belt.")
     p.add_argument(
