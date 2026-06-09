@@ -28,7 +28,7 @@ from .pico import Pico, PicoError
 log = logging.getLogger("coin_sorter.sorter")
 
 
-def _open_camera(width: int, height: int):  # type: ignore[no-untyped-def]
+def _open_camera(width: int, height: int, af_mode: str = "continuous", lens_position=None):  # type: ignore[no-untyped-def]
     """Open and start a Picamera2 preview-configured stream for inference."""
     try:
         from picamera2 import Picamera2  # type: ignore[import-not-found]
@@ -45,6 +45,9 @@ def _open_camera(width: int, height: int):  # type: ignore[no-untyped-def]
     )
     picam.configure(cfg)
     picam.start()
+    from .capture import apply_autofocus
+
+    apply_autofocus(picam, af_mode, lens_position)
     time.sleep(0.5)
     return picam
 
@@ -76,7 +79,12 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
             "Train a model and place it at the path in config.yaml to enable real inference."
         )
 
-    picam = _open_camera(int(cam_cfg["width"]), int(cam_cfg["height"]))
+    picam = _open_camera(
+        int(cam_cfg["width"]),
+        int(cam_cfg["height"]),
+        cam_cfg.get("af_mode", "continuous"),
+        cam_cfg.get("lens_position"),
+    )
     pico = Pico(
         port=serial_cfg["port"],
         baud=int(serial_cfg["baud"]),

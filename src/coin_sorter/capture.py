@@ -50,7 +50,38 @@ from . import configure_logging, load_config
 log = logging.getLogger("coin_sorter.capture")
 
 
-def _open_camera(width: int, height: int):  # type: ignore[no-untyped-def]
+def apply_autofocus(picam, af_mode: str = "continuous", lens_position=None) -> None:  # type: ignore[no-untyped-def]
+    """Set the Arducam 64MP autofocus via libcamera controls (picamera2).
+
+    af_mode: ``manual`` locks the lens at ``lens_position`` dioptres (0=infinity
+    .. ~15=close — same scale as cam_test/stream.py); ``auto`` does a one-shot
+    focus then locks; ``continuous`` keeps refocusing. Failures are logged and
+    swallowed so capture still runs at the default lens position.
+    """
+    try:
+        from libcamera import controls  # type: ignore[import-not-found]
+    except ImportError as e:  # pragma: no cover - depends on host
+        log.warning("libcamera controls unavailable (%s); leaving focus at default.", e)
+        return
+    mode = (af_mode or "continuous").lower()
+    try:
+        if mode == "manual":
+            lp = float(lens_position or 0.0)
+            picam.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": lp})
+            log.info("Focus: manual, lens_position=%.2f dioptres", lp)
+        elif mode == "auto":
+            picam.set_controls({"AfMode": controls.AfModeEnum.Auto})
+            picam.set_controls({"AfTrigger": controls.AfTriggerEnum.Start})
+            time.sleep(2.0)  # let the one-shot sweep converge
+            log.info("Focus: one-shot autofocus complete.")
+        else:
+            picam.set_controls({"AfMode": controls.AfModeEnum.Continuous})
+            log.info("Focus: continuous autofocus.")
+    except Exception as e:  # pragma: no cover - depends on hardware
+        log.warning("Could not set autofocus (%s); leaving focus at default.", e)
+
+
+def _open_camera(width: int, height: int, af_mode: str = "continuous", lens_position=None):  # type: ignore[no-untyped-def]
     """Open and start a Picamera2 preview-configured RGB888 stream.
 
     We use the preview configuration (not still) because the belt-fed loop
@@ -77,6 +108,7 @@ def _open_camera(width: int, height: int):  # type: ignore[no-untyped-def]
     )
     picam.configure(config)
     picam.start()
+    apply_autofocus(picam, af_mode, lens_position)
     # Warm-up — AE/AWB take a moment to converge.
     time.sleep(1.0)
     return picam
@@ -429,7 +461,7 @@ def run_calibration(
         serial_cfg or {}, lights=lights, light_rgb=light_rgb,
         drive_belt=False, belt_speed_hz=0,
     )
-    picam = _open_camera(width, height)
+    picam = _open_camera(width, height, cam.get("af_mode", "continuous"), cam.get("lens_position"))
     try:
         for _ in range(5):  # let AE/AWB settle (under the ring light)
             frame = picam.capture_array()
@@ -513,6 +545,8 @@ def capture_loop(
     belt_speed_hz: int = 800,
     lights: bool = True,
     light_rgb=(180, 180, 180),
+    af_mode: str = "continuous",
+    lens_position=None,
 ) -> int:
     """Capture `count` images (or forever) to ``out_root/<label>/``.
 
@@ -528,7 +562,7 @@ def capture_loop(
     out_dir.mkdir(parents=True, exist_ok=True)
     log.info("Writing frames to %s (gate=%s)", out_dir, gate)
 
-    picam = _open_camera(width, height)
+    picam = _open_camera(width, height, af_mode, lens_position)
     pico = maybe_open_pico(
         serial_cfg or {},
         lights=lights,
@@ -731,6 +765,8 @@ def main(argv: list[str] | None = None) -> int:
         belt_speed_hz=belt_speed_hz,
         lights=lights,
         light_rgb=light_rgb,
+        af_mode=cfg["camera"].get("af_mode", "continuous"),
+        lens_position=cfg["camera"].get("lens_position"),
     )
     log.info("Done. Wrote %d images.", written)
     return 0

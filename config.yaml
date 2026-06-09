@@ -14,6 +14,17 @@ camera:
   # Region of interest as fractions of the full frame: (x, y, w, h). Use this
   # to crop down to just the belt region before classification. null = full frame.
   roi: null
+  # Autofocus for the Arducam 64MP (uses libcamera AfMode via picamera2):
+  #   manual     — lock the lens at `lens_position` dioptres (0=infinity .. ~15=
+  #                close). Best for the fixed-distance belt: sharp and repeatable,
+  #                no hunting on the low-contrast belt. Find the value with the
+  #                focus slider in cam_test/stream.py, then set it here.
+  #   continuous — camera refocuses continuously (works out of the box, but may
+  #                hunt). Good for first light before you've dialed in a value.
+  #   auto       — one-shot autofocus at startup, then locked.
+  af_mode: continuous
+  # Lens position in dioptres, used when af_mode is "manual". null until tuned.
+  lens_position: null
 
 serial:
   port: /dev/ttyACM0
