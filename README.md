@@ -89,19 +89,74 @@ groups | tr ' ' '\n' | grep dialout || sudo usermod -aG dialout "$USER"
 
 ## Data capture workflow
 
-Drop coins on the belt one denomination at a time, vary lighting and
-position, and let `capture.py` accumulate images:
+Capture is **belt-fed**: load one denomination, run the belt, and let coins
+pass under the camera. `capture.py` crops to the belt ROI, runs a coin-presence
+gate so empty-belt frames are not saved, and tight-crops around each coin so it
+fills the saved image (which is what the 224×224 whole-image classifier wants).
+
+### 1. Calibrate the ROI and thresholds (one-time)
 
 ```bash
-python -m coin_sorter.capture --label penny    --interval 0.5 --count 300
-python -m coin_sorter.capture --label nickel   --interval 0.5 --count 300
-python -m coin_sorter.capture --label dime     --interval 0.5 --count 300
-python -m coin_sorter.capture --label quarter  --interval 0.5 --count 300
-python -m coin_sorter.capture --label reject   --interval 0.5 --count 300  # foreign / junk
+python -m coin_sorter.capture --label _calib --calibrate
 ```
 
-Rough rule of thumb: 200–500 images per class is enough for a nano YOLO-cls
-to converge. Aim for balanced counts (see "Class imbalance" below).
+This grabs a frame, runs the detector, and writes `roi_snapshot.jpg` +
+`overlay.jpg` (detected contour/bbox/centroid and the dedup band) to
+`data/processed/_calib/`, logging the ROI rectangle, blob `area_frac`, and
+`circularity`. Copy the snapshot to a workstation, then set the belt region and
+tune the gate in **`config.local.yaml`** (gitignored, deep-merged over
+`config.yaml`):
+
+```yaml
+camera:
+  roi: [0.20, 0.15, 0.60, 0.70]   # x, y, w, h as fractions of the full frame
+capture:
+  min_area_frac: 0.02             # bracket the area_frac the calibrator logged
+  max_area_frac: 0.60
+  min_circularity: 0.65
+  # invert: true                  # if coins are darker than the belt
+  # method: absdiff               # if coin/belt brightness are too close to threshold
+```
+
+Re-run `--calibrate` with a coin in the ROI until the overlay shows exactly one
+clean blob on the coin (and empty belt yields no detection). Then delete the
+`_calib` snapshots before zipping.
+
+### 2. Capture each class
+
+```bash
+python -m coin_sorter.capture --label penny   --count 250
+python -m coin_sorter.capture --label nickel  --count 250
+python -m coin_sorter.capture --label dime    --count 250
+python -m coin_sorter.capture --label quarter --count 250
+# 'reject' (foreign coins, debris, multi-coin clusters, empty belt) bypasses the
+# single-coin gate automatically; feed junk and use --interval for cadence:
+python -m coin_sorter.capture --label reject  --interval 0.4 --count 250
+```
+
+With the gate on (the default), **`--count` counts coins saved**, not frames
+grabbed. By default one image is saved per coin as its centroid crosses the
+middle of the ROI (`dedup_mode: centroid_band`). For more pose variety per coin
+use `--dedup min_interval`; for every gated frame use `--dedup none`. Pass
+`--no-gate` to fall back to the legacy "save the ROI-cropped frame every
+`--interval`" behaviour.
+
+Rough rule of thumb: 200–500 images per class is enough for a nano YOLO-cls to
+converge. Aim for balanced counts (see "Class imbalance" below). Vary lighting
+and orientation across the run, and spot-check `data/raw/<label>/` afterwards —
+coins should be centred and filling the frame, with no empty-belt shots.
+
+### Optional: drive the belt from the capture tool (experimental)
+
+```bash
+python -m coin_sorter.capture --label penny --count 250 --drive-belt --belt-speed 800
+```
+
+This enables the motor and emulates continuous motion with repeated finite
+`MOVE` chunks (the firmware exposes only `MOVE`/`SPEED`, no free-run command).
+It assumes `MOVE` returns promptly; if your firmware blocks until the move
+finishes, drive the belt independently instead. Any Pico error is logged and
+capture continues belt-less. Default is **off**.
 
 ## Training workflow (Colab)
 
@@ -155,6 +210,10 @@ Everything lives in `config.yaml`. Per-machine overrides go in
 - `classifier.labels` — class order. **Must match alphabetical sort of the
   training class folders** (this is how Ultralytics assigns indices).
 - `sorter.cooldown_ms` — guard against double-classifying the same coin.
+- `camera.roi` — belt region as `[x, y, w, h]` fractions; capture crops to this.
+- `capture.*` — the belt-fed capture gate (segmentation method, area/circularity
+  thresholds, dedup mode, crop padding). See "Data capture workflow" above and
+  the inline comments in `config.yaml`.
 
 ## Troubleshooting
 

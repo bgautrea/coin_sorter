@@ -56,6 +56,65 @@ sorter:
   # the same coin.
   cooldown_ms: 250
 
+capture:
+  # Belt-fed training-data capture (used by coin_sorter.capture). The belt runs
+  # continuously with a single denomination loaded; the gate below ensures we
+  # only save frames that actually contain a coin, tightly cropped so the coin
+  # fills the saved image. All values can be overridden in config.local.yaml.
+  #
+  # Master switch. true = only save gated, coin-present frames. false = legacy
+  # behaviour (save the ROI-cropped frame every --interval, no detection).
+  gate: true
+  # Segmentation method for the presence gate:
+  #   brightness — per-frame intensity threshold (Otsu or fixed). Motion-
+  #                invariant, so robust on a moving belt. Preferred.
+  #   absdiff    — rolling-median background subtraction. Fallback for when the
+  #                coin and belt are too close in brightness to threshold.
+  method: brightness
+  # Gaussian blur kernel (odd) applied before thresholding to kill sensor noise.
+  blur_ksize: 5
+  # Blob area filter as a FRACTION of the ROI area (resolution-independent).
+  # A detection only counts as a coin if min <= area/roi_area <= max.
+  min_area_frac: 0.02
+  max_area_frac: 0.60
+  # Circularity = 4*pi*area / perimeter^2 (1.0 = perfect circle). Rejects belt
+  # seams, shadows and debris streaks. Coins are round, so keep this high.
+  min_circularity: 0.65
+  # brightness method: fixed grayscale threshold, or null to use Otsu.
+  bright_thresh: null
+  # Set true if coins are DARKER than the belt (e.g. dark coins on a bright belt).
+  invert: false
+  # absdiff method: number of frames in the rolling-median background, and the
+  # per-pixel difference threshold that counts as foreground.
+  bg_window: 25
+  absdiff_thresh: 25
+  # Dedup — one physical coin spans many consecutive frames as it travels:
+  #   centroid_band — save once, when the coin centroid first crosses a virtual
+  #                   trip line across the belt. One sample per coin. Default.
+  #   min_interval  — save at most once per min_interval_s while a coin is
+  #                   present. A few pose samples per coin.
+  #   none          — save every gated frame (many near-duplicates).
+  dedup_mode: centroid_band
+  # Axis the coins travel along: "y" (top->bottom) or "x" (left->right).
+  travel_axis: y
+  # Trip-line position and half-width as fractions of the ROI along travel_axis.
+  band_center_frac: 0.5
+  band_halfwidth_frac: 0.08
+  # Minimum seconds between saves. Acts as a per-coin cadence in min_interval
+  # mode and as a global jam safety-valve in all modes.
+  min_interval_s: 0.6
+  # Tight-crop framing: pad the coin bbox by this fraction of its longest side,
+  # and (optionally) make the crop square and centred on the coin centroid.
+  crop_pad_frac: 0.25
+  crop_square: true
+  # Optional belt driving from the capture tool (experimental — firmware only
+  # exposes finite MOVE/SPEED, so continuous motion is emulated with repeated
+  # MOVE chunks). Default off; run the belt independently for the first session.
+  drive_belt: false
+  belt_speed_hz: 800
+  # Label whose capture bypasses the single-coin gate (debris/empty/multi-coin).
+  reject_label: reject
+
 dataset:
   raw_dir: data/raw
   processed_dir: data/processed

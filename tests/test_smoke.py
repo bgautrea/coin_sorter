@@ -2,10 +2,48 @@
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from coin_sorter import load_config
+from coin_sorter.capture import (
+    CoinDetector,
+    Deduper,
+    Detection,
+    crop_roi,
+    resolve_roi,
+    tight_square_crop,
+)
 from coin_sorter.infer import CoinClassifier
+
+
+# --- helpers ---------------------------------------------------------------- #
+
+_CAP_PARAMS = {
+    "method": "brightness",
+    "blur_ksize": 5,
+    "min_area_frac": 0.01,
+    "max_area_frac": 0.80,
+    "min_circularity": 0.7,
+    "bright_thresh": None,
+    "dedup_mode": "centroid_band",
+    "travel_axis": "y",
+    "band_center_frac": 0.5,
+    "band_halfwidth_frac": 0.15,
+    "min_interval_s": 0.0,
+}
+
+
+def _belt_frame(w: int = 200, h: int = 200) -> np.ndarray:
+    """A uniform mid-gray 'empty belt' BGR frame."""
+    return np.full((h, w, 3), 90, dtype=np.uint8)
+
+
+def _coin_frame(cx: int, cy: int, r: int = 30, w: int = 200, h: int = 200) -> np.ndarray:
+    """A bright filled circle (coin) on the gray belt."""
+    frame = _belt_frame(w, h)
+    cv2.circle(frame, (cx, cy), r, (230, 230, 230), -1)
+    return frame
 
 
 def test_config_loads() -> None:
@@ -31,3 +69,83 @@ def test_classifier_preprocess_shape() -> None:
     x = clf.preprocess(frame)
     assert x.shape == (1, 3, clf.input_size, clf.input_size)
     assert x.dtype == np.float32
+
+
+# --- ROI -------------------------------------------------------------------- #
+
+
+def test_resolve_roi_fractions_to_pixels() -> None:
+    assert resolve_roi(None, 1280, 720) is None
+    assert resolve_roi([0.25, 0.5, 0.5, 0.25], 1280, 720) == (320, 360, 640, 180)
+
+
+def test_resolve_roi_clamps_to_frame() -> None:
+    x, y, w, h = resolve_roi([0.9, 0.9, 0.5, 0.5], 100, 100)
+    assert x + w <= 100 and y + h <= 100
+
+
+def test_crop_roi_slices() -> None:
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    assert crop_roi(frame, (10, 20, 30, 40)).shape == (40, 30, 3)
+    assert crop_roi(frame, None).shape == (100, 100, 3)
+
+
+# --- detector --------------------------------------------------------------- #
+
+
+def test_detector_finds_coin() -> None:
+    det = CoinDetector(_CAP_PARAMS, 200, 200).detect(_coin_frame(100, 100, r=30))
+    assert det.found
+    assert det.circularity > 0.7
+    cx, cy = det.centroid
+    assert abs(cx - 100) <= 3 and abs(cy - 100) <= 3
+
+
+def test_detector_ignores_empty_belt() -> None:
+    assert not CoinDetector(_CAP_PARAMS, 200, 200).detect(_belt_frame()).found
+
+
+def test_detector_area_filter_rejects_tiny_blob() -> None:
+    params = {**_CAP_PARAMS, "min_area_frac": 0.2}  # circle r=10 is ~0.8% of area
+    assert not CoinDetector(params, 200, 200).detect(_coin_frame(100, 100, r=10)).found
+
+
+# --- deduper ---------------------------------------------------------------- #
+
+
+def _det_at(cy: int) -> Detection:
+    return Detection(found=True, centroid=(100, cy), bbox=(80, cy - 20, 40, 40), area=1200.0, circularity=0.9)
+
+
+def test_deduper_fires_once_per_coin() -> None:
+    d = Deduper("centroid_band", _CAP_PARAMS, 200, 200)  # band is y in [70, 130]
+    assert not d.should_save(_det_at(40), 0.0)  # above band
+    assert d.should_save(_det_at(100), 0.1)  # crosses into band -> save
+    assert not d.should_save(_det_at(105), 0.2)  # same coin, already disarmed
+    assert not d.should_save(Detection(found=False), 0.3)  # empty belt re-arms
+    assert d.should_save(_det_at(100), 0.4)  # next coin saves
+
+
+def test_deduper_min_interval_rate_caps() -> None:
+    params = {**_CAP_PARAMS, "min_interval_s": 1.0}
+    d = Deduper("min_interval", params, 200, 200)
+    assert d.should_save(_det_at(100), 0.0)
+    assert not d.should_save(_det_at(100), 0.5)  # within interval
+    assert d.should_save(_det_at(100), 1.5)  # interval elapsed
+
+
+# --- tight crop ------------------------------------------------------------- #
+
+
+def test_tight_square_crop_is_square_centered() -> None:
+    roi = _coin_frame(100, 100, r=30)
+    det = CoinDetector(_CAP_PARAMS, 200, 200).detect(roi)
+    crop = tight_square_crop(roi, det, pad_frac=0.25, square=True)
+    assert crop is not None and crop.shape[0] == crop.shape[1]
+
+
+def test_tight_square_crop_clamps_at_edge() -> None:
+    roi = _coin_frame(10, 10, r=8)  # coin in the corner
+    det = CoinDetector({**_CAP_PARAMS, "min_area_frac": 0.001}, 200, 200).detect(roi)
+    crop = tight_square_crop(roi, det, pad_frac=0.5, square=True)
+    assert crop is not None and crop.size > 0  # clamped, never out of bounds
