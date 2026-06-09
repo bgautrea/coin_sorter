@@ -47,7 +47,7 @@ belt_timer = Timer()
 # Ring light (WS2812 on GP16) - camera illumination
 # ============================================================
 RING_PIN   = 16
-RING_COUNT = 14
+RING_COUNT = 10
 ring = NeoPixel(Pin(RING_PIN), RING_COUNT)  # GRB order, 800kHz
 
 def ring_fill(r, g, b):
