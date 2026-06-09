@@ -351,20 +351,26 @@ def tight_square_crop(
 
 
 # --------------------------------------------------------------------------- #
-# Optional belt driving (experimental)
+# Pico: ring light + optional belt driving
 # --------------------------------------------------------------------------- #
 
 
-def maybe_open_belt(serial_cfg: dict, drive: bool, speed_hz: int):  # type: ignore[no-untyped-def]
-    """Best-effort: open the Pico and start the belt free-running at `speed_hz`.
+def maybe_open_pico(
+    serial_cfg: dict,
+    *,
+    lights: bool,
+    light_rgb,
+    drive_belt: bool,
+    belt_speed_hz: int,
+):  # type: ignore[no-untyped-def]
+    """Best-effort: open the Pico for the ring light and/or belt driving.
 
-    Uses the firmware's non-blocking ``RUN`` command (timer-driven), so a single
-    call keeps the belt moving while we capture. Returns the open
-    :class:`~coin_sorter.pico.Pico` or ``None``. Any failure is logged and
-    swallowed so capture proceeds belt-less (hand-feed, or run the belt
-    externally).
+    Turns the WS2812 ring on (for even, consistent illumination) and, if
+    ``drive_belt``, starts the belt free-running via the firmware's non-blocking
+    ``RUN``. Returns the open :class:`~coin_sorter.pico.Pico` or ``None``; any
+    failure is logged and swallowed so capture proceeds without lights/belt.
     """
-    if not drive:
+    if not (lights or drive_belt):
         return None
     try:
         from .pico import Pico
@@ -377,14 +383,19 @@ def maybe_open_belt(serial_cfg: dict, drive: bool, speed_hz: int):  # type: igno
         )
         pico.open()
         if not pico.ping():
-            log.warning("Belt: Pico did not respond to PING — capturing belt-less.")
+            log.warning("Pico did not respond to PING — no ring light / belt.")
             pico.close()
             return None
-        pico.run(int(speed_hz))
-        log.info("Belt running continuously at %d Hz.", speed_hz)
+        if lights:
+            r, g, b = (int(v) for v in light_rgb)
+            pico.set_leds(r, g, b)
+            log.info("Ring light on: rgb=(%d, %d, %d).", r, g, b)
+        if drive_belt:
+            pico.run(int(belt_speed_hz))
+            log.info("Belt running continuously at %d Hz.", belt_speed_hz)
         return pico
     except Exception as e:  # pragma: no cover - depends on hardware
-        log.warning("Belt: could not start belt (%s) — capturing belt-less.", e)
+        log.warning("Pico setup failed (%s) — no ring light / belt.", e)
         return None
 
 
@@ -393,20 +404,34 @@ def maybe_open_belt(serial_cfg: dict, drive: bool, speed_hz: int):  # type: igno
 # --------------------------------------------------------------------------- #
 
 
-def run_calibration(cfg: dict, cap_params: dict, roi_cfg: Any, out_dir: Path) -> int:
+def run_calibration(
+    cfg: dict,
+    cap_params: dict,
+    roi_cfg: Any,
+    out_dir: Path,
+    *,
+    serial_cfg: dict | None = None,
+    lights: bool = True,
+    light_rgb=(180, 180, 180),
+) -> int:
     """Grab one frame, run the detector, and write debug snapshots.
 
     Writes ``roi_snapshot.jpg`` and ``overlay.jpg`` (detected contour, bbox,
     centroid and the dedup band) to ``out_dir`` and logs ROI / area-fraction /
     circularity so you can tune ``camera.roi`` and ``capture.*`` thresholds in
-    ``config.local.yaml``. ``out_dir`` lives under ``dataset.processed_dir`` so
+    ``config.local.yaml``. The ring light is turned on so the snapshot matches
+    capture conditions. ``out_dir`` lives under ``dataset.processed_dir`` so
     training never scans it as a class.
     """
     cam = cfg["camera"]
     width, height = int(cam["width"]), int(cam["height"])
+    pico = maybe_open_pico(
+        serial_cfg or {}, lights=lights, light_rgb=light_rgb,
+        drive_belt=False, belt_speed_hz=0,
+    )
     picam = _open_camera(width, height)
     try:
-        for _ in range(5):  # let AE/AWB settle
+        for _ in range(5):  # let AE/AWB settle (under the ring light)
             frame = picam.capture_array()
             time.sleep(0.1)
     finally:
@@ -439,6 +464,13 @@ def run_calibration(cfg: dict, cap_params: dict, roi_cfg: Any, out_dir: Path) ->
         picam.stop()
     except Exception:  # pragma: no cover
         pass
+    if pico is not None:
+        try:
+            if lights:
+                pico.set_leds(0, 0, 0)  # ring off
+        except Exception:  # pragma: no cover
+            pass
+        pico.close()
 
     roi_area = float(roi_w * roi_h)
     log.info("Calib: ROI px=%s in frame %dx%d", roi_px or (0, 0, width, height), width, height)
@@ -479,6 +511,8 @@ def capture_loop(
     serial_cfg: dict | None = None,
     drive_belt: bool = False,
     belt_speed_hz: int = 800,
+    lights: bool = True,
+    light_rgb=(180, 180, 180),
 ) -> int:
     """Capture `count` images (or forever) to ``out_root/<label>/``.
 
@@ -495,7 +529,13 @@ def capture_loop(
     log.info("Writing frames to %s (gate=%s)", out_dir, gate)
 
     picam = _open_camera(width, height)
-    belt = maybe_open_belt(serial_cfg or {}, drive_belt, belt_speed_hz)
+    pico = maybe_open_pico(
+        serial_cfg or {},
+        lights=lights,
+        light_rgb=light_rgb,
+        drive_belt=drive_belt,
+        belt_speed_hz=belt_speed_hz,
+    )
 
     roi_px = resolve_roi(roi_cfg, width, height)
     roi_w = roi_px[2] if roi_px else width
@@ -563,13 +603,16 @@ def capture_loop(
             picam.stop()
         except Exception:  # pragma: no cover
             pass
-        if belt is not None:
+        if pico is not None:
             try:
-                belt.stop()
-                belt.disable()
+                if drive_belt:
+                    pico.stop()
+                    pico.disable()
+                if lights:
+                    pico.set_leds(0, 0, 0)  # ring off
             except Exception:  # pragma: no cover
                 pass
-            belt.close()
+            pico.close()
     return written
 
 
@@ -615,6 +658,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--belt-speed", type=int, default=None, help="Belt step rate in Hz when --drive-belt.")
     p.add_argument(
+        "--lights",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Turn the WS2812 ring light on for the session (override capture.lights).",
+    )
+    p.add_argument(
         "--calibrate",
         action="store_true",
         help="Write ROI/detection debug snapshots and exit (for tuning roi + thresholds).",
@@ -654,9 +703,15 @@ def main(argv: list[str] | None = None) -> int:
     roi_cfg = cfg["camera"].get("roi")
     cap_params = _resolve_capture_params(cfg, args)
 
+    lights = args.lights if args.lights is not None else bool(cap_params.get("lights", True))
+    light_rgb = tuple(cap_params.get("light_rgb", (180, 180, 180)))
+
     if args.calibrate:
         processed = Path(cfg["dataset"].get("processed_dir", "data/processed"))
-        return run_calibration(cfg, cap_params, roi_cfg, processed / "_calib")
+        return run_calibration(
+            cfg, cap_params, roi_cfg, processed / "_calib",
+            serial_cfg=cfg.get("serial"), lights=lights, light_rgb=light_rgb,
+        )
 
     drive_belt = args.drive_belt if args.drive_belt is not None else bool(cap_params.get("drive_belt", False))
     belt_speed_hz = args.belt_speed if args.belt_speed is not None else int(cap_params.get("belt_speed_hz", 800))
@@ -674,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
         serial_cfg=cfg.get("serial"),
         drive_belt=drive_belt,
         belt_speed_hz=belt_speed_hz,
+        lights=lights,
+        light_rgb=light_rgb,
     )
     log.info("Done. Wrote %d images.", written)
     return 0

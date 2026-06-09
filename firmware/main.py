@@ -12,6 +12,7 @@
 
 import sys, select, time
 from machine import Pin, mem32, Timer
+from neopixel import NeoPixel
 
 # ============================================================
 # Feature flags - flip to True as you wire each subsystem
@@ -41,6 +42,22 @@ LED = Pin(25, Pin.OUT, value=0)
 
 # Software timer used for non-blocking continuous belt motion (RUN/STOP).
 belt_timer = Timer()
+
+# ============================================================
+# Ring light (WS2812 on GP16) - camera illumination
+# ============================================================
+RING_PIN   = 16
+RING_COUNT = 14
+ring = NeoPixel(Pin(RING_PIN), RING_COUNT)  # GRB order, 800kHz
+
+def ring_fill(r, g, b):
+    """Set the whole ring to one colour (0-255 each) and latch it."""
+    c = (r & 255, g & 255, b & 255)
+    for i in range(RING_COUNT):
+        ring[i] = c
+    ring.write()
+
+ring_fill(0, 0, 0)  # start dark
 
 # ============================================================
 # Diverter stepper (28BYJ-48 / ULN2003) - optional
@@ -275,6 +292,15 @@ def handle(line):
             belt_enable(True); print("OK")
         elif cmd == "DISABLE":
             belt_enable(False); print("OK")
+        # Ring light
+        elif cmd == "LED":
+            r, g, b = int(parts[1]), int(parts[2]), int(parts[3])
+            ring_fill(r, g, b)
+            print(f"OK led {r & 255} {g & 255} {b & 255}")
+        elif cmd == "RING":
+            v = int(parts[1]) & 255
+            ring_fill(v, v, v)
+            print(f"OK ring {v}")
         # Diverter
         elif cmd == "DIV":
             div_move(int(parts[1])); div_release()

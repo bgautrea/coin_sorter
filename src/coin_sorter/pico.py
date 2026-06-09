@@ -156,6 +156,14 @@ class Pico:
         """Stop continuous belt motion started by :meth:`run`."""
         self._send("STOP")
 
+    def set_leds(self, r: int, g: int, b: int) -> None:
+        """Set the whole WS2812 ring to one RGB colour (0-255 each)."""
+        self._send(f"LED {int(r)} {int(g)} {int(b)}")
+
+    def ring(self, brightness: int) -> None:
+        """Set the ring to neutral white at `brightness` (0-255). 0 = off."""
+        self._send(f"RING {int(brightness)}")
+
     def enable(self) -> None:
         """Enable the motor driver."""
         self._send("ENABLE")

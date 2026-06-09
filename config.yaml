@@ -113,6 +113,12 @@ capture:
   # blow past the dedup band between frames.
   drive_belt: false
   belt_speed_hz: 800
+  # WS2812 ring light (on the Pico, GP16) for even, consistent illumination.
+  # On by default for every capture/calibrate session and turned off on exit.
+  # Keep it neutral white (R=G=B) so copper/silver render true for the model;
+  # lower the values if the frame is over-exposed.
+  lights: true
+  light_rgb: [180, 180, 180]
   # Label whose capture bypasses the single-coin gate (debris/empty/multi-coin).
   reject_label: reject
 

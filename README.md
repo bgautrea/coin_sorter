@@ -94,6 +94,14 @@ pass under the camera. `capture.py` crops to the belt ROI, runs a coin-presence
 gate so empty-belt frames are not saved, and tight-crops around each coin so it
 fills the saved image (which is what the 224×224 whole-image classifier wants).
 
+A **WS2812 ring light** (driven by the Pico on GP16) is turned on for every
+capture and calibration session and off on exit, for even, consistent
+illumination. It defaults to neutral white (`capture.light_rgb`) so copper and
+silver render true; lower the values if frames are over-exposed, or pass
+`--no-lights` to disable. Wiring: ring data → Pico GP16 (330–470 Ω series, 5 V
+logic level-shift recommended), 5 V from a supply with the ground tied to the
+Pico, ~1000 µF across the ring's 5 V/GND.
+
 ### 1. Calibrate the ROI and thresholds (one-time)
 
 ```bash
@@ -215,6 +223,8 @@ Everything lives in `config.yaml`. Per-machine overrides go in
 - `capture.*` — the belt-fed capture gate (segmentation method, area/circularity
   thresholds, dedup mode, crop padding). See "Data capture workflow" above and
   the inline comments in `config.yaml`.
+- `capture.lights / light_rgb` — WS2812 ring light (Pico GP16); on for every
+  session, neutral white by default.
 
 ## Troubleshooting
 
