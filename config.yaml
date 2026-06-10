@@ -106,6 +106,10 @@ capture:
   # per-pixel difference threshold that counts as foreground.
   bg_window: 25
   absdiff_thresh: 25
+  # How often (in frames) to recompute the median background. The background is
+  # nearly static, so recomputing every frame is wasted work that tanks the
+  # framerate; refresh every bg_refresh frames instead. Defaults to bg_window.
+  bg_refresh: 25
   # Dedup — one physical coin spans many consecutive frames as it travels:
   #   centroid_band — save once, when the coin centroid first crosses a virtual
   #                   trip line across the belt. One sample per coin. Default.

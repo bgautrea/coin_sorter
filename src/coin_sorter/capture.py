@@ -256,6 +256,13 @@ class CoinDetector:
         self.bg_window = max(3, int(params.get("bg_window", 25)))
         self.absdiff_thresh = int(params.get("absdiff_thresh", 25))
         self._bg: deque[np.ndarray] = deque(maxlen=self.bg_window)
+        # The background (static specular streak + belt) barely changes, so
+        # recomputing the median over the whole window every frame is wasted
+        # work that tanks the framerate. Cache it and refresh only every
+        # ``bg_refresh`` frames.
+        self.bg_refresh = max(1, int(params.get("bg_refresh", self.bg_window)))
+        self._bg_model: np.ndarray | None = None
+        self._since_refresh = 0
 
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
@@ -278,9 +285,13 @@ class CoinDetector:
         # Wait until the rolling window is reasonably full so the median is
         # dominated by belt, not by the first coin we happen to see.
         if len(self._bg) < max(3, self.bg_window // 2):
+            self._since_refresh = 0
             return np.zeros_like(gray)
-        bg = np.median(np.stack(self._bg, axis=0), axis=0).astype(np.uint8)
-        diff = cv2.absdiff(gray, bg)
+        if self._bg_model is None or self._since_refresh >= self.bg_refresh:
+            self._bg_model = np.median(np.stack(self._bg, axis=0), axis=0).astype(np.uint8)
+            self._since_refresh = 0
+        self._since_refresh += 1
+        diff = cv2.absdiff(gray, self._bg_model)
         _, mask = cv2.threshold(diff, self.absdiff_thresh, 255, cv2.THRESH_BINARY)
         return mask
 
