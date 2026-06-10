@@ -102,7 +102,23 @@ silver render true; lower the values if frames are over-exposed, or pass
 logic level-shift recommended), 5 V from a supply with the ground tied to the
 Pico, ~1000 µF across the ring's 5 V/GND.
 
-### 1. Calibrate the ROI and thresholds (one-time)
+### Web UI (recommended on a headless Pi)
+
+```bash
+python -m coin_sorter.webcal        # then open http://<pi-ip>:8080/
+```
+
+A browser tool with a **live preview + coin-detection overlay** and sliders for
+**focus** (lens position in dioptres), **white balance** (red/blue gains — fix
+the magenta cast the LEDs cause), **ROI**, and the **gate thresholds**. You can
+also **run belt-fed capture** from the page: set a label, Start, and watch the
+saved count climb as coins go by. "Show config" emits a `config.local.yaml`
+snippet so the tuned focus/WB/ROI/thresholds lock into the CLI tools.
+
+The web UI **owns the camera while running** — stop it before using the CLI
+`capture`/`--calibrate` commands below (only one process can open the camera).
+
+### 1. Calibrate the ROI and thresholds (CLI, one-time)
 
 ```bash
 python -m coin_sorter.capture --label _calib --calibrate
@@ -220,6 +236,10 @@ Everything lives in `config.yaml`. Per-machine overrides go in
   training class folders** (this is how Ultralytics assigns indices).
 - `sorter.cooldown_ms` — guard against double-classifying the same coin.
 - `camera.roi` — belt region as `[x, y, w, h]` fractions; capture crops to this.
+- `camera.af_mode / lens_position` — Arducam 64MP focus (manual lock recommended
+  for the fixed-distance belt; find the value in the web UI or cam_test/stream.py).
+- `camera.awb / colour_gains` — white balance; lock it (manual `[red, blue]`) for
+  consistent colour under the ring. Tune in the web UI (`coin_sorter.webcal`).
 - `capture.*` — the belt-fed capture gate (segmentation method, area/circularity
   thresholds, dedup mode, crop padding). See "Data capture workflow" above and
   the inline comments in `config.yaml`.

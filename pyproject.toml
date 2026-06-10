@@ -50,6 +50,7 @@ dev = [
 coin-capture = "coin_sorter.capture:main"
 coin-sorter = "coin_sorter.sorter:main"
 coin-train = "coin_sorter.train:main"
+coin-webcal = "coin_sorter.webcal:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

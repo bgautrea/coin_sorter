@@ -149,3 +149,50 @@ def test_tight_square_crop_clamps_at_edge() -> None:
     det = CoinDetector({**_CAP_PARAMS, "min_area_frac": 0.001}, 200, 200).detect(roi)
     crop = tight_square_crop(roi, det, pad_frac=0.5, square=True)
     assert crop is not None and crop.size > 0  # clamped, never out of bounds
+
+
+# --- webcal pure functions -------------------------------------------------- #
+
+
+def test_webcal_default_state_from_config() -> None:
+    from coin_sorter.webcal import default_state
+
+    s = default_state(load_config())
+    assert s["focus_mode"] in ("continuous", "manual")
+    assert 0.0 <= s["min_area"] <= 1.0 and "label" in s
+
+
+def test_webcal_apply_setting_parses_and_flags_hardware() -> None:
+    from coin_sorter.webcal import apply_setting, default_state
+
+    s = default_state(load_config())
+    # lens slider implies manual focus and flags a hardware change
+    assert apply_setting(s, "lens", "4.5") is True
+    assert s["lens"] == 4.5 and s["focus_mode"] == "manual"
+    # red gain implies manual WB
+    assert apply_setting(s, "red", "1.8") is True
+    assert s["awb_mode"] == "manual"
+    # ROI / thresholds are software-only (no hardware flag)
+    assert apply_setting(s, "roi_w", "0.6") is False
+    assert s["roi_w"] == 0.6
+    # out-of-range clamps, garbage is ignored
+    assert apply_setting(s, "lens", "999") is True and s["lens"] == 15.0
+    apply_setting(s, "circ", "not_a_number")  # no raise
+
+
+def test_webcal_config_snippet_round_trips_yaml() -> None:
+    import yaml
+
+    from coin_sorter.webcal import apply_setting, config_snippet, default_state
+
+    s = default_state(load_config())
+    apply_setting(s, "lens", "4.5")
+    apply_setting(s, "red", "1.8")
+    apply_setting(s, "blue", "1.5")
+    apply_setting(s, "min_area", "0.03")
+    parsed = yaml.safe_load(config_snippet(s))
+    assert parsed["camera"]["af_mode"] == "manual"
+    assert parsed["camera"]["lens_position"] == 4.5
+    assert parsed["camera"]["awb"] == "manual"
+    assert parsed["camera"]["colour_gains"] == [1.8, 1.5]
+    assert parsed["capture"]["min_area_frac"] == 0.03

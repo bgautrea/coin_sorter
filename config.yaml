@@ -25,6 +25,13 @@ camera:
   af_mode: continuous
   # Lens position in dioptres, used when af_mode is "manual". null until tuned.
   lens_position: null
+  # White balance. Lock it for consistent colour under the ring light — auto-WB
+  # casts a tint under the LEDs' narrow spectrum, which muddies the copper-vs-
+  # silver cue the classifier relies on. awb: auto | manual.
+  awb: auto
+  # [red, blue] gain multipliers, used when awb is "manual". Find them with the
+  # web tool (python -m coin_sorter.webcal). null until tuned.
+  colour_gains: null
 
 serial:
   port: /dev/ttyACM0

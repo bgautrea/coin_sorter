@@ -81,7 +81,39 @@ def apply_autofocus(picam, af_mode: str = "continuous", lens_position=None) -> N
         log.warning("Could not set autofocus (%s); leaving focus at default.", e)
 
 
-def _open_camera(width: int, height: int, af_mode: str = "continuous", lens_position=None):  # type: ignore[no-untyped-def]
+def apply_white_balance(picam, awb_mode: str = "auto", colour_gains=None) -> None:  # type: ignore[no-untyped-def]
+    """Set white balance via libcamera controls (picamera2).
+
+    ``manual`` locks AWB and applies ``colour_gains`` as (red, blue) multipliers
+    — needed for consistent colour under the WS2812 ring, whose narrow spectrum
+    fools auto-WB into a colour cast. ``auto`` re-enables AWB. Failures are
+    logged and swallowed so capture still runs.
+    """
+    try:
+        from libcamera import controls  # type: ignore[import-not-found]  # noqa: F401
+    except ImportError as e:  # pragma: no cover - depends on host
+        log.warning("libcamera controls unavailable (%s); leaving white balance at default.", e)
+        return
+    try:
+        if (awb_mode or "auto").lower() == "manual" and colour_gains:
+            r, b = (float(x) for x in colour_gains)
+            picam.set_controls({"AwbEnable": False, "ColourGains": (r, b)})
+            log.info("White balance: manual, gains red=%.2f blue=%.2f", r, b)
+        else:
+            picam.set_controls({"AwbEnable": True})
+            log.info("White balance: auto.")
+    except Exception as e:  # pragma: no cover - depends on hardware
+        log.warning("Could not set white balance (%s); leaving at default.", e)
+
+
+def _open_camera(
+    width: int,
+    height: int,
+    af_mode: str = "continuous",
+    lens_position=None,
+    awb_mode: str = "auto",
+    colour_gains=None,
+):  # type: ignore[no-untyped-def]
     """Open and start a Picamera2 preview-configured RGB888 stream.
 
     We use the preview configuration (not still) because the belt-fed loop
@@ -109,6 +141,7 @@ def _open_camera(width: int, height: int, af_mode: str = "continuous", lens_posi
     picam.configure(config)
     picam.start()
     apply_autofocus(picam, af_mode, lens_position)
+    apply_white_balance(picam, awb_mode, colour_gains)
     # Warm-up — AE/AWB take a moment to converge.
     time.sleep(1.0)
     return picam
@@ -461,7 +494,11 @@ def run_calibration(
         serial_cfg or {}, lights=lights, light_rgb=light_rgb,
         drive_belt=False, belt_speed_hz=0,
     )
-    picam = _open_camera(width, height, cam.get("af_mode", "continuous"), cam.get("lens_position"))
+    picam = _open_camera(
+        width, height,
+        cam.get("af_mode", "continuous"), cam.get("lens_position"),
+        cam.get("awb", "auto"), cam.get("colour_gains"),
+    )
     try:
         for _ in range(5):  # let AE/AWB settle (under the ring light)
             frame = picam.capture_array()
@@ -547,6 +584,8 @@ def capture_loop(
     light_rgb=(180, 180, 180),
     af_mode: str = "continuous",
     lens_position=None,
+    awb_mode: str = "auto",
+    colour_gains=None,
 ) -> int:
     """Capture `count` images (or forever) to ``out_root/<label>/``.
 
@@ -562,7 +601,7 @@ def capture_loop(
     out_dir.mkdir(parents=True, exist_ok=True)
     log.info("Writing frames to %s (gate=%s)", out_dir, gate)
 
-    picam = _open_camera(width, height, af_mode, lens_position)
+    picam = _open_camera(width, height, af_mode, lens_position, awb_mode, colour_gains)
     pico = maybe_open_pico(
         serial_cfg or {},
         lights=lights,
@@ -767,6 +806,8 @@ def main(argv: list[str] | None = None) -> int:
         light_rgb=light_rgb,
         af_mode=cfg["camera"].get("af_mode", "continuous"),
         lens_position=cfg["camera"].get("lens_position"),
+        awb_mode=cfg["camera"].get("awb", "auto"),
+        colour_gains=cfg["camera"].get("colour_gains"),
     )
     log.info("Done. Wrote %d images.", written)
     return 0
