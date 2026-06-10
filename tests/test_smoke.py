@@ -190,9 +190,13 @@ def test_webcal_config_snippet_round_trips_yaml() -> None:
     apply_setting(s, "red", "1.8")
     apply_setting(s, "blue", "1.5")
     apply_setting(s, "min_area", "0.03")
+    assert apply_setting(s, "exp", "1500") is True and s["exp_mode"] == "manual"
+    apply_setting(s, "gain", "3.0")
     parsed = yaml.safe_load(config_snippet(s))
     assert parsed["camera"]["af_mode"] == "manual"
     assert parsed["camera"]["lens_position"] == 4.5
     assert parsed["camera"]["awb"] == "manual"
     assert parsed["camera"]["colour_gains"] == [1.8, 1.5]
+    assert parsed["camera"]["exposure_us"] == 1500
+    assert parsed["camera"]["analogue_gain"] == 3.0
     assert parsed["capture"]["min_area_frac"] == 0.03

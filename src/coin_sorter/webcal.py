@@ -68,6 +68,9 @@ def default_state(cfg: dict) -> dict:
         "method": capc.get("method", "brightness"),
         "dedup": capc.get("dedup_mode", "centroid_band"),
         "ring": int(rgb[0]),
+        "exp_mode": "manual" if cam.get("exposure_us") else "auto",
+        "exp_us": int(cam.get("exposure_us") or 4000),
+        "gain": float(cam.get("analogue_gain") or 2.0),
         "belt": False,
         "dir": 1,  # 1 = forward, -1 = reverse
         "hz": int(capc.get("belt_speed_hz", 400)),
@@ -101,6 +104,17 @@ def apply_setting(state: dict, key: str, val: str) -> bool:
         if key in ("red", "blue"):
             state[key] = _clamp(float(val), 0.1, 8.0)
             state["awb_mode"] = "manual"
+            return True
+        if key == "exp_mode":
+            state["exp_mode"] = "manual" if val == "manual" else "auto"
+            return True
+        if key == "exp":
+            state["exp_us"] = int(_clamp(float(val), 50, 33000))
+            state["exp_mode"] = "manual"
+            return True
+        if key == "gain":
+            state["gain"] = _clamp(float(val), 1.0, 16.0)
+            state["exp_mode"] = "manual"
             return True
         if key in ("roi_x", "roi_y", "roi_w", "roi_h"):
             state[key] = _clamp(float(val), 0.0, 1.0)
@@ -150,6 +164,8 @@ def config_snippet(state: dict) -> str:
         lines += ["  awb: manual", f"  colour_gains: [{state['red']:.2f}, {state['blue']:.2f}]"]
     else:
         lines.append("  awb: auto")
+    if state["exp_mode"] == "manual":
+        lines += [f"  exposure_us: {int(state['exp_us'])}", f"  analogue_gain: {state['gain']:.2f}"]
     lines.append("capture:")
     lines.append(f"  min_area_frac: {state['min_area']:.3f}")
     lines.append(f"  max_area_frac: {state['max_area']:.3f}")
@@ -172,6 +188,11 @@ def _apply_hw(picam, pico, st: dict) -> None:  # type: ignore[no-untyped-def]
     cap.apply_autofocus(picam, st["focus_mode"], st["lens"])
     cap.apply_white_balance(
         picam, st["awb_mode"], (st["red"], st["blue"]) if st["awb_mode"] == "manual" else None
+    )
+    cap.apply_exposure(
+        picam,
+        st["exp_us"] if st["exp_mode"] == "manual" else None,
+        st["gain"] if st["exp_mode"] == "manual" else None,
     )
     if pico is not None:
         try:
@@ -197,6 +218,7 @@ def _draw_overlay(frame, roi_px, det, st: dict) -> None:  # type: ignore[no-unty
     rows = [
         "focus=" + st["focus_mode"] + (f" lens={st['lens']:.2f}" if st["focus_mode"] == "manual" else ""),
         "awb=" + st["awb_mode"] + (f" r={st['red']:.2f} b={st['blue']:.2f}" if st["awb_mode"] == "manual" else ""),
+        "exp=" + st["exp_mode"] + (f" {st['exp_us']}us g={st['gain']:.1f}" if st["exp_mode"] == "manual" else ""),
         ("DETECTED" if det.found else "no coin") + f"  area={det.area / area:.3f} circ={det.circularity:.2f}",
     ]
     if st["session_active"]:
@@ -322,6 +344,11 @@ input#label{background:#222;color:#eee;border:1px solid #555;padding:5px;border-
 <div class=row><button id=wbauto onclick="set('awb_mode','auto')">Auto</button></div>
 <div class=row><label>red</label><input id=red type=range min=0.5 max=5 step=0.02 oninput="sl('red',this.value)"><span class=val id=redv></span></div>
 <div class=row><label>blue</label><input id=blue type=range min=0.5 max=5 step=0.02 oninput="sl('blue',this.value)"><span class=val id=bluev></span></div>
+<h3>Exposure</h3>
+<div class=row><button id=expauto onclick="set('exp_mode','auto')">Auto</button>
+ <span style="font-size:12px;color:#999">shorter = freezes motion</span></div>
+<div class=row><label>shutter &micro;s</label><input id=exp type=range min=100 max=20000 step=100 oninput="sl('exp',this.value)"><span class=val id=expv></span></div>
+<div class=row><label>gain</label><input id=gain type=range min=1 max=16 step=0.5 oninput="sl('gain',this.value)"><span class=val id=gainv></span></div>
 <h3>ROI (fractions)</h3>
 <div class=row><label>x</label><input id=roi_x type=range min=0 max=1 step=0.005 oninput="sl('roi_x',this.value)"><span class=val id=roi_xv></span></div>
 <div class=row><label>y</label><input id=roi_y type=range min=0 max=1 step=0.005 oninput="sl('roi_y',this.value)"><span class=val id=roi_yv></span></div>
@@ -353,8 +380,12 @@ let belt=false, rec=false, dir=1;
 function set(k,v){fetch('/set?'+k+'='+encodeURIComponent(v));syncManual(k);}
 function sl(k,v){document.getElementById(k+'v').textContent=(+v).toFixed(2);set(k,v);}
 function syncManual(k){
-  if(k==='focus_mode')document.getElementById('afauto').classList.toggle('active',true);
+  if(k==='lens')document.getElementById('afauto').classList.remove('active');
+  if(k==='focus_mode')document.getElementById('afauto').classList.add('active');
+  if(k==='red'||k==='blue')document.getElementById('wbauto').classList.remove('active');
   if(k==='awb_mode')document.getElementById('wbauto').classList.add('active');
+  if(k==='exp'||k==='gain')document.getElementById('expauto').classList.remove('active');
+  if(k==='exp_mode')document.getElementById('expauto').classList.add('active');
 }
 function toggleBelt(){belt=!belt;document.getElementById('beltbtn').classList.toggle('active',belt);
   document.getElementById('beltbtn').textContent=belt?'Stop':'Run';fetch('/set?belt='+(belt?1:0));}
@@ -365,10 +396,12 @@ function toggleRec(){rec=!rec;const b=document.getElementById('recbtn');
     fetch('/capture?action=start&label='+encodeURIComponent(l));b.textContent='Stop';b.classList.add('active');}
   else{fetch('/capture?action=stop');b.textContent='Start';b.classList.remove('active');}}
 function showCfg(){fetch('/config').then(r=>r.text()).then(t=>document.getElementById('cfg').textContent=t);}
-function init(s){for(const k of ['lens','red','blue','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz']){
-  const el=document.getElementById(k);if(el&&s[k]!==undefined){el.value=s[k];document.getElementById(k+'v').textContent=(+s[k]).toFixed(2);}}
+function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz']){
+  const sk=(k==='exp')?'exp_us':k;
+  const el=document.getElementById(k);if(el&&s[sk]!==undefined){el.value=s[sk];document.getElementById(k+'v').textContent=(+s[sk]).toFixed(2);}}
   document.getElementById('afauto').classList.toggle('active',s.focus_mode==='continuous');
   document.getElementById('wbauto').classList.toggle('active',s.awb_mode==='auto');
+  document.getElementById('expauto').classList.toggle('active',s.exp_mode==='auto');
   if(s.dir!==undefined){dir=s.dir;const b=document.getElementById('dirbtn');
     b.textContent=dir>0?'Fwd':'Rev';b.classList.toggle('active',dir<0);}}
 fetch('/state').then(r=>r.json()).then(init);

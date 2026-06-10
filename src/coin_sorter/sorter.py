@@ -35,6 +35,8 @@ def _open_camera(
     lens_position=None,
     awb_mode: str = "auto",
     colour_gains=None,
+    exposure_us=None,
+    analogue_gain=None,
 ):  # type: ignore[no-untyped-def]
     """Open and start a Picamera2 preview-configured stream for inference."""
     try:
@@ -52,10 +54,11 @@ def _open_camera(
     )
     picam.configure(cfg)
     picam.start()
-    from .capture import apply_autofocus, apply_white_balance
+    from .capture import apply_autofocus, apply_exposure, apply_white_balance
 
     apply_autofocus(picam, af_mode, lens_position)
     apply_white_balance(picam, awb_mode, colour_gains)
+    apply_exposure(picam, exposure_us, analogue_gain)
     time.sleep(0.5)
     return picam
 
@@ -94,6 +97,8 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
         cam_cfg.get("lens_position"),
         cam_cfg.get("awb", "auto"),
         cam_cfg.get("colour_gains"),
+        cam_cfg.get("exposure_us"),
+        cam_cfg.get("analogue_gain"),
     )
     pico = Pico(
         port=serial_cfg["port"],

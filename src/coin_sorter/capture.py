@@ -106,6 +106,30 @@ def apply_white_balance(picam, awb_mode: str = "auto", colour_gains=None) -> Non
         log.warning("Could not set white balance (%s); leaving at default.", e)
 
 
+def apply_exposure(picam, exposure_us=None, analogue_gain=None) -> None:  # type: ignore[no-untyped-def]
+    """Set exposure time (microseconds) and analogue gain (picamera2 controls).
+
+    Both ``None`` ⇒ auto-exposure. Otherwise auto-exposure is locked and a fixed
+    ``ExposureTime`` / ``AnalogueGain`` applied — a short exposure freezes the
+    motion blur a moving belt causes (the bright ring light makes a fast shutter
+    feasible). Failures are logged and swallowed.
+    """
+    try:
+        if exposure_us is None and analogue_gain is None:
+            picam.set_controls({"AeEnable": True})
+            log.info("Exposure: auto.")
+        else:
+            c = {"AeEnable": False}
+            if exposure_us is not None:
+                c["ExposureTime"] = int(exposure_us)
+            if analogue_gain is not None:
+                c["AnalogueGain"] = float(analogue_gain)
+            picam.set_controls(c)
+            log.info("Exposure: manual, time=%sus gain=%s", c.get("ExposureTime"), c.get("AnalogueGain"))
+    except Exception as e:  # pragma: no cover - depends on hardware
+        log.warning("Could not set exposure (%s); leaving at default.", e)
+
+
 def _open_camera(
     width: int,
     height: int,
@@ -113,6 +137,8 @@ def _open_camera(
     lens_position=None,
     awb_mode: str = "auto",
     colour_gains=None,
+    exposure_us=None,
+    analogue_gain=None,
 ):  # type: ignore[no-untyped-def]
     """Open and start a Picamera2 preview-configured RGB888 stream.
 
@@ -142,6 +168,7 @@ def _open_camera(
     picam.start()
     apply_autofocus(picam, af_mode, lens_position)
     apply_white_balance(picam, awb_mode, colour_gains)
+    apply_exposure(picam, exposure_us, analogue_gain)
     # Warm-up — AE/AWB take a moment to converge.
     time.sleep(1.0)
     return picam
@@ -498,6 +525,7 @@ def run_calibration(
         width, height,
         cam.get("af_mode", "continuous"), cam.get("lens_position"),
         cam.get("awb", "auto"), cam.get("colour_gains"),
+        cam.get("exposure_us"), cam.get("analogue_gain"),
     )
     try:
         for _ in range(5):  # let AE/AWB settle (under the ring light)
@@ -586,6 +614,8 @@ def capture_loop(
     lens_position=None,
     awb_mode: str = "auto",
     colour_gains=None,
+    exposure_us=None,
+    analogue_gain=None,
 ) -> int:
     """Capture `count` images (or forever) to ``out_root/<label>/``.
 
@@ -601,7 +631,10 @@ def capture_loop(
     out_dir.mkdir(parents=True, exist_ok=True)
     log.info("Writing frames to %s (gate=%s)", out_dir, gate)
 
-    picam = _open_camera(width, height, af_mode, lens_position, awb_mode, colour_gains)
+    picam = _open_camera(
+        width, height, af_mode, lens_position, awb_mode, colour_gains,
+        exposure_us, analogue_gain,
+    )
     pico = maybe_open_pico(
         serial_cfg or {},
         lights=lights,
@@ -808,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
         lens_position=cfg["camera"].get("lens_position"),
         awb_mode=cfg["camera"].get("awb", "auto"),
         colour_gains=cfg["camera"].get("colour_gains"),
+        exposure_us=cfg["camera"].get("exposure_us"),
+        analogue_gain=cfg["camera"].get("analogue_gain"),
     )
     log.info("Done. Wrote %d images.", written)
     return 0
