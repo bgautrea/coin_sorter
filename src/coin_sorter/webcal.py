@@ -44,6 +44,7 @@ _latest = [b""]
 _running = [True]
 _ctrl_ver = [0]  # bumped when a hardware control (focus/wb/ring/belt) changes
 _state: dict = {}
+_raw_dir = [None]  # base directory for captured crops; set in main()
 
 
 def default_state(cfg: dict) -> dict:
@@ -331,7 +332,13 @@ button.active{background:#0a6}
 h3{margin:6px 0;font-size:14px;color:#8cf;border-bottom:1px solid #333}
 #stat{font-family:monospace;font-size:13px;color:#9f9}
 pre{background:#000;padding:8px;border-radius:4px;white-space:pre-wrap;font-size:12px}
-input#label{background:#222;color:#eee;border:1px solid #555;padding:5px;border-radius:4px;width:120px}
+input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padding:5px;border-radius:4px;width:120px}
+.gallery{display:flex;flex-wrap:wrap;gap:6px;max-height:460px;overflow:auto;margin-top:8px}
+.thumb{position:relative;width:92px;height:92px}
+.thumb img{width:92px;height:92px;object-fit:cover;border:1px solid #333;border-radius:4px;cursor:zoom-in}
+.thumb button{position:absolute;top:2px;right:2px;width:20px;height:20px;padding:0;line-height:18px;
+  font-size:12px;background:#a22;border:1px solid #c44;border-radius:3px;opacity:.85;cursor:pointer}
+.thumb button:hover{opacity:1;background:#e33}
 </style></head><body>
 <div class=wrap>
 <div><img src="/stream.mjpg"><div id=stat>…</div></div>
@@ -374,6 +381,15 @@ input#label{background:#222;color:#eee;border:1px solid #555;padding:5px;border-
 <div class=row><button onclick="showCfg()">Show config snippet</button></div>
 <pre id=cfg></pre>
 </div>
+<div class=panel style="min-width:340px">
+<h3>Captures</h3>
+<div class=row>
+ <input id=gallabel placeholder="label e.g. penny">
+ <button onclick="loadCaptures()">Refresh</button>
+ <span id=galcount style="font-size:12px;color:#9cf"></span>
+</div>
+<div id=gallery class=gallery></div>
+</div>
 </div>
 <script>
 let belt=false, rec=false, dir=1;
@@ -394,8 +410,31 @@ function toggleDir(){dir=-dir;const b=document.getElementById('dirbtn');
 function toggleRec(){rec=!rec;const b=document.getElementById('recbtn');
   if(rec){const l=document.getElementById('label').value||'coin';
     fetch('/capture?action=start&label='+encodeURIComponent(l));b.textContent='Stop';b.classList.add('active');}
-  else{fetch('/capture?action=stop');b.textContent='Start';b.classList.remove('active');}}
+  else{fetch('/capture?action=stop');b.textContent='Start';b.classList.remove('active');
+    document.getElementById('gallabel').value=document.getElementById('label').value||'coin';loadCaptures();}}
 function showCfg(){fetch('/config').then(r=>r.text()).then(t=>document.getElementById('cfg').textContent=t);}
+function loadCaptures(){
+  const l=document.getElementById('gallabel').value||document.getElementById('label').value||'coin';
+  document.getElementById('gallabel').value=l;
+  fetch('/captures?label='+encodeURIComponent(l)).then(r=>r.json()).then(d=>{
+    document.getElementById('galcount').textContent=
+      d.total+' total'+(d.total>d.files.length?(' (showing newest '+d.files.length+')'):'');
+    const g=document.getElementById('gallery');g.innerHTML='';
+    for(const n of d.files){
+      const div=document.createElement('div');div.className='thumb';
+      const img=document.createElement('img');img.title=n;
+      img.src='/capture_img?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n);
+      img.onclick=()=>window.open(img.src,'_blank');
+      const b=document.createElement('button');b.textContent='✕';b.title='delete';
+      b.onclick=()=>delCap(l,n,div);
+      div.appendChild(img);div.appendChild(b);g.appendChild(div);
+    }
+  });
+}
+function delCap(l,n,div){
+  fetch('/capture_del?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n),{method:'POST'})
+    .then(r=>{if(r.ok)div.remove();});
+}
 function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz']){
   const sk=(k==='exp')?'exp_us':k;
   const el=document.getElementById(k);if(el&&s[sk]!==undefined){el.value=s[sk];document.getElementById(k+'v').textContent=(+s[sk]).toFixed(2);}}
@@ -403,7 +442,9 @@ function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y
   document.getElementById('wbauto').classList.toggle('active',s.awb_mode==='auto');
   document.getElementById('expauto').classList.toggle('active',s.exp_mode==='auto');
   if(s.dir!==undefined){dir=s.dir;const b=document.getElementById('dirbtn');
-    b.textContent=dir>0?'Fwd':'Rev';b.classList.toggle('active',dir<0);}}
+    b.textContent=dir>0?'Fwd':'Rev';b.classList.toggle('active',dir<0);}
+  if(s.label)document.getElementById('gallabel').value=s.label;
+  loadCaptures();}
 fetch('/state').then(r=>r.json()).then(init);
 setInterval(()=>{fetch('/status').then(r=>r.json()).then(s=>{
   document.getElementById('stat').textContent=(s.detected?'● COIN':'○ none')+
@@ -412,6 +453,47 @@ setInterval(()=>{fetch('/status').then(r=>r.json()).then(s=>{
 });},500);
 </script></body></html>
 """
+
+
+# --------------------------------------------------------------------------- #
+# Capture browsing / deletion
+# --------------------------------------------------------------------------- #
+
+
+def _label_dir(label: str):
+    """Resolve the capture directory for ``label``, or None if unsafe/unset.
+
+    ``Path(...).name`` strips any directory components, so a crafted label like
+    ``../foo`` cannot escape the raw-capture root.
+    """
+    base = _raw_dir[0]
+    if base is None:
+        return None
+    name = Path(label or "").name
+    if not name:
+        return None
+    return Path(base) / name
+
+
+def list_captures(label: str, limit: int = 80):
+    """Return (newest-first filenames up to ``limit``, total count) for ``label``."""
+    d = _label_dir(label)
+    if d is None or not d.is_dir():
+        return [], 0
+    files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".jpg"]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p.name for p in files[:limit]], len(files)
+
+
+def _capture_file(label: str, name: str):
+    """Resolve a single capture file path, guarding against path traversal."""
+    d = _label_dir(label)
+    if d is None:
+        return None
+    fname = Path(name or "").name
+    if not fname.lower().endswith(".jpg"):
+        return None
+    return d / fname
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -467,6 +549,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             with _lock:
                 snip = config_snippet(_state)
             self._send(200, "text/plain", snip.encode())
+        elif u.path == "/captures":
+            label = q.get("label", [_state.get("label", "")])[0]
+            names, total = list_captures(label)
+            self._send(200, "application/json",
+                       json.dumps({"label": label, "files": names, "total": total}).encode())
+        elif u.path == "/capture_img":
+            p = _capture_file(q.get("label", [""])[0], q.get("name", [""])[0])
+            if p is not None and p.is_file():
+                self._send(200, "image/jpeg", p.read_bytes())
+            else:
+                self.send_error(404)
         elif u.path == "/stream.mjpg":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=FRAME")
@@ -491,6 +584,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self):  # noqa: N802
+        u = urllib.parse.urlparse(self.path)
+        q = urllib.parse.parse_qs(u.query)
+        if u.path == "/capture_del":
+            p = _capture_file(q.get("label", [""])[0], q.get("name", [""])[0])
+            ok = False
+            if p is not None and p.is_file():
+                try:
+                    p.unlink()
+                    ok = True
+                except OSError as e:
+                    log.warning("delete failed: %s", e)
+            self.send_response(204 if ok else 404)
+            self.end_headers()
+        else:
+            self.send_error(404)
+
 
 class _ThreadedHTTP(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
@@ -506,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
     raw_dir = Path(cfg["dataset"]["raw_dir"])
+    _raw_dir[0] = raw_dir
     global _state
     _state = default_state(cfg)
 
