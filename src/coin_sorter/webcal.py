@@ -74,6 +74,9 @@ def default_state(cfg: dict) -> dict:
         "belt": False,
         "dir": 1,  # 1 = forward, -1 = reverse
         "hz": int(capc.get("belt_speed_hz", 400)),
+        "feeder": False,
+        "feeder_dir": 1,  # 1 = forward, -1 = reverse
+        "feeder_hz": int(capc.get("feeder_speed_hz", 400)),
         "session_active": False, "label": "", "count": 0,
         # live readout (written by the camera thread)
         "det": False, "area_frac": 0.0, "det_circ": 0.0,
@@ -144,6 +147,15 @@ def apply_setting(state: dict, key: str, val: str) -> bool:
         elif key == "hz":
             state["hz"] = int(_clamp(float(val), 1, 5000))
             return True
+        elif key == "feeder":
+            state["feeder"] = val in ("1", "true", "True", "on")
+            return True
+        elif key == "feeder_dir":
+            state["feeder_dir"] = -1 if val in ("-1", "rev", "reverse") else 1
+            return True
+        elif key == "feeder_hz":
+            state["feeder_hz"] = int(_clamp(float(val), 1, 5000))
+            return True
     except (ValueError, TypeError):
         pass
     return False
@@ -198,6 +210,8 @@ def _apply_hw(picam, pico, st: dict) -> None:  # type: ignore[no-untyped-def]
         try:
             pico.set_leds(st["ring"], st["ring"], st["ring"])
             pico.run(st["hz"] * st.get("dir", 1)) if st["belt"] else pico.stop()
+            (pico.feeder_run(st["feeder_hz"] * st.get("feeder_dir", 1))
+             if st["feeder"] else pico.feeder_stop())
         except Exception as e:  # pragma: no cover - hardware
             log.warning("Pico control failed: %s", e)
 
@@ -306,7 +320,8 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
         except Exception:  # pragma: no cover
             pass
         if pico is not None:
-            for fn in (lambda: pico.stop(), lambda: pico.set_leds(0, 0, 0), pico.close):
+            for fn in (lambda: pico.stop(), lambda: pico.feeder_stop(),
+                       lambda: pico.set_leds(0, 0, 0), pico.close):
                 try:
                     fn()
                 except Exception:  # pragma: no cover
@@ -366,6 +381,10 @@ input#label{background:#222;color:#eee;border:1px solid #555;padding:5px;border-
 <div class=row><button id=beltbtn onclick="toggleBelt()">Run</button>
  <button id=dirbtn onclick="toggleDir()">Fwd</button>
  <label>speed</label><input id=hz type=range min=50 max=1500 step=10 oninput="sl('hz',this.value)"><span class=val id=hzv></span></div>
+<h3>Feeder</h3>
+<div class=row><button id=feedbtn onclick="toggleFeeder()">Run</button>
+ <button id=feeddirbtn onclick="toggleFeederDir()">Fwd</button>
+ <label>speed</label><input id=feeder_hz type=range min=50 max=5000 step=25 oninput="sl('feeder_hz',this.value)"><span class=val id=feeder_hzv></span></div>
 <h3>Capture</h3>
 <div class=row><input id=label placeholder="label e.g. penny">
  <button id=recbtn onclick="toggleRec()">Start</button></div>
@@ -376,7 +395,7 @@ input#label{background:#222;color:#eee;border:1px solid #555;padding:5px;border-
 </div>
 </div>
 <script>
-let belt=false, rec=false, dir=1;
+let belt=false, rec=false, dir=1, feeder=false, feederDir=1;
 function set(k,v){fetch('/set?'+k+'='+encodeURIComponent(v));syncManual(k);}
 function sl(k,v){document.getElementById(k+'v').textContent=(+v).toFixed(2);set(k,v);}
 function syncManual(k){
@@ -391,19 +410,25 @@ function toggleBelt(){belt=!belt;document.getElementById('beltbtn').classList.to
   document.getElementById('beltbtn').textContent=belt?'Stop':'Run';fetch('/set?belt='+(belt?1:0));}
 function toggleDir(){dir=-dir;const b=document.getElementById('dirbtn');
   b.textContent=dir>0?'Fwd':'Rev';b.classList.toggle('active',dir<0);fetch('/set?dir='+dir);}
+function toggleFeeder(){feeder=!feeder;document.getElementById('feedbtn').classList.toggle('active',feeder);
+  document.getElementById('feedbtn').textContent=feeder?'Stop':'Run';fetch('/set?feeder='+(feeder?1:0));}
+function toggleFeederDir(){feederDir=-feederDir;const b=document.getElementById('feeddirbtn');
+  b.textContent=feederDir>0?'Fwd':'Rev';b.classList.toggle('active',feederDir<0);fetch('/set?feeder_dir='+feederDir);}
 function toggleRec(){rec=!rec;const b=document.getElementById('recbtn');
   if(rec){const l=document.getElementById('label').value||'coin';
     fetch('/capture?action=start&label='+encodeURIComponent(l));b.textContent='Stop';b.classList.add('active');}
   else{fetch('/capture?action=stop');b.textContent='Start';b.classList.remove('active');}}
 function showCfg(){fetch('/config').then(r=>r.text()).then(t=>document.getElementById('cfg').textContent=t);}
-function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz']){
+function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz']){
   const sk=(k==='exp')?'exp_us':k;
   const el=document.getElementById(k);if(el&&s[sk]!==undefined){el.value=s[sk];document.getElementById(k+'v').textContent=(+s[sk]).toFixed(2);}}
   document.getElementById('afauto').classList.toggle('active',s.focus_mode==='continuous');
   document.getElementById('wbauto').classList.toggle('active',s.awb_mode==='auto');
   document.getElementById('expauto').classList.toggle('active',s.exp_mode==='auto');
   if(s.dir!==undefined){dir=s.dir;const b=document.getElementById('dirbtn');
-    b.textContent=dir>0?'Fwd':'Rev';b.classList.toggle('active',dir<0);}}
+    b.textContent=dir>0?'Fwd':'Rev';b.classList.toggle('active',dir<0);}
+  if(s.feeder_dir!==undefined){feederDir=s.feeder_dir;const b=document.getElementById('feeddirbtn');
+    b.textContent=feederDir>0?'Fwd':'Rev';b.classList.toggle('active',feederDir<0);}}
 fetch('/state').then(r=>r.json()).then(init);
 setInterval(()=>{fetch('/status').then(r=>r.json()).then(s=>{
   document.getElementById('stat').textContent=(s.detected?'● COIN':'○ none')+
