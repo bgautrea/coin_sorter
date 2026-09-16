@@ -4,6 +4,8 @@
 #   - Belt drive: NEMA17 via TB6600-style driver
 #       PUL/DIR/ENA on GP2/3/4, driver + pins to Pico 3V3
 #       Inverted ENA logic (this clone disables on current flow)
+#   - Feeder drive: NEMA17 via TB6600-style driver (spins coins into the belt)
+#       PUL/DIR/ENA on GP18/19/20, same wiring + inverted ENA as the belt
 #
 # Add later by flipping the flags below:
 #   DIVERTER_ENABLED    - 28BYJ-48 + ULN2003 on GP6/7/8/9
@@ -42,6 +44,25 @@ LED = Pin(25, Pin.OUT, value=0)
 
 # Software timer used for non-blocking continuous belt motion (RUN/STOP).
 belt_timer = Timer()
+
+# ============================================================
+# Feeder stepper (TB6600 / NEMA17) - spins coins onto the belt
+# Same driver + wiring as the belt; its own pins and timer so it
+# can free-run independently while the belt also runs.
+# ============================================================
+FPUL = Pin(18, Pin.OUT, value=1)
+FDIR = Pin(19, Pin.OUT, value=0)
+FENA = Pin(20, Pin.OUT, value=0)
+
+for _gpio in (18, 19, 20):
+    _reg = PADS_BASE + 0x04 + _gpio * 4
+    mem32[_reg] = (mem32[_reg] & ~0x30) | 0x30
+
+def feeder_enable(on):
+    """Inverted ENA logic for this driver clone (matches the belt)."""
+    FENA.value(1 if on else 0)
+
+feeder_timer = Timer()
 
 # ============================================================
 # Ring light (WS2812 on GP16) - camera illumination
@@ -102,6 +123,9 @@ state = {
     "div_step_idx": 0,
     "homed": not HOME_SWITCH_ENABLED,   # auto-homed when no switch
     "running": False,                   # True while the belt free-runs (RUN)
+    "feeder_speed_hz": 1500,
+    "feeder_running": False,            # True while the feeder free-runs (FRUN)
+    "feeder_position": 0,
 }
 
 # ============================================================
@@ -161,6 +185,52 @@ def belt_stop():
         state["running"] = False
         state["busy"] = False
         LED.off()
+
+# ============================================================
+# Feeder motion (mirrors the belt, independent pins + timer)
+# ============================================================
+def feeder_move(steps):
+    """Blocking feeder move. Negative steps = reverse."""
+    feeder_stop()  # a finite move and a free-run must not fight over FPUL
+    direction = 1 if steps >= 0 else 0
+    FDIR.value(direction)
+    time.sleep_us(5)
+    feeder_enable(True)
+    half_us = max(50, 500_000 // state["feeder_speed_hz"])
+    state["busy"] = True
+    for _ in range(abs(steps)):
+        FPUL.value(0); time.sleep_us(half_us)
+        FPUL.value(1); time.sleep_us(half_us)
+        state["feeder_position"] += 1 if direction else -1
+    state["busy"] = False
+
+def _feeder_tick(t):
+    """Timer ISR: toggle FPUL to emit a square wave. Allocation-free."""
+    FPUL.value(0 if FPUL.value() else 1)
+
+def feeder_run(hz):
+    """Start non-blocking continuous feeder motion. hz>0 fwd, hz<0 rev.
+
+    Independent of the belt timer, so both can free-run at once. Returns the
+    signed step rate actually applied.
+    """
+    feeder_stop()
+    hz = int(hz)
+    if hz == 0:
+        return 0
+    FDIR.value(1 if hz > 0 else 0)
+    state["feeder_speed_hz"] = abs(hz)
+    feeder_enable(True)
+    state["feeder_running"] = True
+    feeder_timer.init(freq=abs(hz) * 2, mode=Timer.PERIODIC, callback=_feeder_tick)
+    return hz
+
+def feeder_stop():
+    """Halt continuous feeder motion (no-op if not running). Leaves FPUL idle."""
+    feeder_timer.deinit()
+    FPUL.value(1)
+    if state["feeder_running"]:
+        state["feeder_running"] = False
 
 # ============================================================
 # Diverter motion (no-ops when disabled)
@@ -273,7 +343,7 @@ def handle(line):
             if DIVERTER_ENABLED:    features += ",diverter"
             if HOME_SWITCH_ENABLED: features += ",home_sw"
             if COIN_SENSOR_ENABLED: features += ",coin_sensor"
-            print(f"STATUS busy={state['busy']} running={state['running']} belt={state['belt_position']} div={state['div_position']} homed={state['homed']} speed={state['speed_hz']} coin={coin_present()} features={features}")
+            print(f"STATUS busy={state['busy']} running={state['running']} belt={state['belt_position']} feeder={state['feeder_position']} feeder_running={state['feeder_running']} div={state['div_position']} homed={state['homed']} speed={state['speed_hz']} feeder_speed={state['feeder_speed_hz']} coin={coin_present()} features={features}")
         elif cmd == "BINS":
             print("OK " + ",".join(f"{k}={v}" for k, v in BIN_POSITIONS.items()))
         # Belt
@@ -292,6 +362,22 @@ def handle(line):
             belt_enable(True); print("OK")
         elif cmd == "DISABLE":
             belt_enable(False); print("OK")
+        # Feeder
+        elif cmd == "FMOVE":
+            feeder_move(int(parts[1]))
+            print(f"OK {state['feeder_position']}")
+        elif cmd == "FRUN":
+            hz = int(parts[1]) if len(parts) > 1 else state["feeder_speed_hz"]
+            print(f"OK feeder running {feeder_run(hz)}")
+        elif cmd == "FSTOP":
+            feeder_stop(); print("OK feeder stopped")
+        elif cmd == "FSPEED":
+            state["feeder_speed_hz"] = int(parts[1])
+            print("OK")
+        elif cmd == "FENABLE":
+            feeder_enable(True); print("OK")
+        elif cmd == "FDISABLE":
+            feeder_enable(False); print("OK")
         # Ring light
         elif cmd == "LED":
             r, g, b = int(parts[1]), int(parts[2]), int(parts[3])

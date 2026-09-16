@@ -156,6 +156,26 @@ class Pico:
         """Stop continuous belt motion started by :meth:`run`."""
         self._send("STOP")
 
+    def feeder_move(self, steps: int) -> None:
+        """Move the feeder by `steps` motor steps (sign = direction)."""
+        self._send(f"FMOVE {int(steps)}")
+
+    def feeder_speed(self, hz: int) -> None:
+        """Set feeder step rate in Hz."""
+        self._send(f"FSPEED {int(hz)}")
+
+    def feeder_run(self, hz: int) -> None:
+        """Start continuous (non-blocking) feeder motion at `hz` steps/s.
+
+        Sign sets direction. Driven by its own hardware timer, so it can
+        free-run alongside the belt. Halt with :meth:`feeder_stop`.
+        """
+        self._send(f"FRUN {int(hz)}")
+
+    def feeder_stop(self) -> None:
+        """Stop continuous feeder motion started by :meth:`feeder_run`."""
+        self._send("FSTOP")
+
     def set_leds(self, r: int, g: int, b: int) -> None:
         """Set the whole WS2812 ring to one RGB colour (0-255 each)."""
         self._send(f"LED {int(r)} {int(g)} {int(b)}")
