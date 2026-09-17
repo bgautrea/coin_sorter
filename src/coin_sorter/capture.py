@@ -222,6 +222,7 @@ class Detection:
     bbox: tuple[int, int, int, int] | None = None
     area: float = 0.0
     circularity: float = 0.0
+    fill: float = 0.0  # area / min-enclosing-circle area (1.0 = one full disc)
     mask: np.ndarray | None = field(default=None, repr=False)
 
 
@@ -248,6 +249,16 @@ class CoinDetector:
         self.min_area = float(params.get("min_area_frac", 0.02)) * roi_area
         self.max_area = float(params.get("max_area_frac", 0.60)) * roi_area
         self.min_circularity = float(params.get("min_circularity", 0.65))
+        # Single-coin gate. Touching/overlapping coins merge into one blob that
+        # can still pass area + circularity, and a coin half out of frame or
+        # with a neighbour inside its crop window is useless as a class sample.
+        self.min_fill = float(params.get("min_fill_frac", 0.85))
+        self.reject_border = bool(params.get("reject_border", True))
+        self.isolate = bool(params.get("isolate", True))
+        # Debris floor for the isolation test (fraction of ROI area): blobs
+        # smaller than this never spoil a crop, everything else does.
+        self.isolate_min_area = float(params.get("isolate_min_frac", 0.002)) * roi_area
+        self.crop_pad_frac = float(params.get("crop_pad_frac", 0.25))
 
         bt = params.get("bright_thresh", None)
         self.bright_thresh = None if bt is None else float(bt)
@@ -304,11 +315,17 @@ class CoinDetector:
         return self._pick_blob(mask)
 
     def _pick_blob(self, mask: np.ndarray) -> Detection:
+        """Largest blob that looks like exactly one whole, isolated coin."""
         cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best_area = 0.0
-        best: Detection | None = None
-        for c in cnts:
-            area = cv2.contourArea(c)
+        rh, rw = mask.shape[:2]
+        # Everything above a debris floor takes part in the isolation test,
+        # including blobs that fail the shape gates (a cluster next to a clean
+        # coin still spoils that coin's crop).
+        blobs = [(cv2.contourArea(c), c, cv2.boundingRect(c)) for c in cnts]
+        blobs = [b for b in blobs if b[0] >= self.isolate_min_area]
+
+        cands = []
+        for area, c, (bx, by, bw, bh) in blobs:
             if area < self.min_area or area > self.max_area:
                 continue
             perim = cv2.arcLength(c, True)
@@ -317,25 +334,44 @@ class CoinDetector:
             circ = 4.0 * math.pi * area / (perim * perim)
             if circ < self.min_circularity:
                 continue
-            if area <= best_area:
+            (_, _), r = cv2.minEnclosingCircle(c)
+            fill = area / (math.pi * r * r) if r > 0 else 0.0
+            if fill < self.min_fill:
+                continue
+            if self.reject_border and (bx <= 0 or by <= 0 or bx + bw >= rw or by + bh >= rh):
+                continue
+            cands.append((area, c, (bx, by, bw, bh), circ, fill))
+
+        for area, c, bbox, circ, fill in sorted(cands, key=lambda t: -t[0]):
+            if self.isolate and not self._isolated(bbox, c, blobs):
                 continue
             m = cv2.moments(c)
             if m["m00"] == 0:
                 continue
             cx = int(round(m["m10"] / m["m00"]))
             cy = int(round(m["m01"] / m["m00"]))
-            best_area = area
-            best = Detection(
+            return Detection(
                 found=True,
                 centroid=(cx, cy),
-                bbox=tuple(cv2.boundingRect(c)),  # type: ignore[arg-type]
+                bbox=bbox,
                 area=area,
                 circularity=circ,
+                fill=fill,
                 mask=mask,
             )
-        if best is None:
-            return Detection(found=False, mask=mask)
-        return best
+        return Detection(found=False, mask=mask)
+
+    def _isolated(self, bbox, own, blobs) -> bool:  # type: ignore[no-untyped-def]
+        """True if no other blob intersects the padded crop window of `bbox`."""
+        bx, by, bw, bh = bbox
+        pad = int(round(self.crop_pad_frac * max(bw, bh)))
+        x0, y0, x1, y1 = bx - pad, by - pad, bx + bw + pad, by + bh + pad
+        for _, c, (ox, oy, ow, oh) in blobs:
+            if c is own:
+                continue
+            if ox < x1 and ox + ow > x0 and oy < y1 and oy + oh > y0:
+                return False
+        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -584,11 +620,12 @@ def run_calibration(
     log.info("Calib: ROI px=%s in frame %dx%d", roi_px or (0, 0, width, height), width, height)
     if det.found:
         log.info(
-            "Calib: coin found — area=%.0f area_frac=%.3f circularity=%.3f. "
+            "Calib: coin found — area=%.0f area_frac=%.3f circularity=%.3f fill=%.3f. "
             "Tune min/max_area_frac to bracket %.3f.",
             det.area,
             det.area / roi_area,
             det.circularity,
+            det.fill,
             det.area / roi_area,
         )
     else:

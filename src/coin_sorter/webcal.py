@@ -44,6 +44,8 @@ _latest = [b""]
 _running = [True]
 _ctrl_ver = [0]  # bumped when a hardware control (focus/wb/ring/belt) changes
 _state: dict = {}
+_capc: dict = {}  # config['capture'] — gate keys with no slider pass through as-is
+_pico_lock = threading.Lock()  # camera thread and feeder pulser share the Pico
 _raw_dir = [None]  # base directory for captured crops; set in main()
 
 
@@ -78,6 +80,9 @@ def default_state(cfg: dict) -> dict:
         "feeder": False,
         "feeder_dir": 1,  # 1 = forward, -1 = reverse
         "feeder_hz": int(capc.get("feeder_speed_hz", 400)),
+        # pulsing: on for feeder_on_ms out of every feeder_period_ms (0 = continuous)
+        "feeder_on_ms": int(capc.get("feeder_on_ms", 0)),
+        "feeder_period_ms": int(capc.get("feeder_period_ms", 2000)),
         "session_active": False, "label": "", "count": 0,
         # live readout (written by the camera thread)
         "det": False, "area_frac": 0.0, "det_circ": 0.0,
@@ -157,6 +162,12 @@ def apply_setting(state: dict, key: str, val: str) -> bool:
         elif key == "feeder_hz":
             state["feeder_hz"] = int(_clamp(float(val), 1, 10000))
             return True
+        elif key == "feeder_on_ms":
+            state["feeder_on_ms"] = int(_clamp(float(val), 0, 5000))
+            return True
+        elif key == "feeder_period_ms":
+            state["feeder_period_ms"] = int(_clamp(float(val), 100, 10000))
+            return True
     except (ValueError, TypeError):
         pass
     return False
@@ -191,10 +202,45 @@ def config_snippet(state: dict) -> str:
 
 def _params(st: dict) -> dict:
     return {
+        **_capc,  # min_fill_frac / reject_border / isolate / crop_pad_frac ...
         "method": st["method"], "blur_ksize": st["blur"],
         "min_area_frac": st["min_area"], "max_area_frac": st["max_area"],
         "min_circularity": st["circ"],
     }
+
+
+def _pulsing(st: dict) -> bool:
+    return bool(st["feeder"]) and 0 < st["feeder_on_ms"] < st["feeder_period_ms"]
+
+
+def feeder_pulser(pico) -> None:  # type: ignore[no-untyped-def]
+    """Run the feeder in bursts (feeder_on_ms of every feeder_period_ms).
+
+    Owns the feeder while pulsing is enabled; _apply_hw leaves it alone then.
+    Its own thread because FRUN blocks the Pico for the ~250 ms accel ramp and
+    that must not stall the camera loop.
+    """
+    on_hw, t0 = False, time.monotonic()
+    while _running[0]:
+        with _lock:
+            st = dict(_state)
+        if not _pulsing(st):
+            on_hw, t0 = False, time.monotonic()
+            time.sleep(0.05)
+            continue
+        phase = ((time.monotonic() - t0) * 1000.0) % st["feeder_period_ms"]
+        want = phase < st["feeder_on_ms"]
+        if want != on_hw:
+            with _pico_lock:
+                try:
+                    if want:
+                        pico.feeder_run(st["feeder_hz"] * st.get("feeder_dir", 1))
+                    else:
+                        pico.feeder_stop()
+                except Exception as e:  # pragma: no cover - hardware
+                    log.warning("Feeder pulse failed: %s", e)
+            on_hw = want
+        time.sleep(0.02)
 
 
 def _apply_hw(picam, pico, st: dict) -> None:  # type: ignore[no-untyped-def]
@@ -208,13 +254,15 @@ def _apply_hw(picam, pico, st: dict) -> None:  # type: ignore[no-untyped-def]
         st["gain"] if st["exp_mode"] == "manual" else None,
     )
     if pico is not None:
-        try:
-            pico.set_leds(st["ring"], st["ring"], st["ring"])
-            pico.run(st["hz"] * st.get("dir", 1)) if st["belt"] else pico.stop()
-            (pico.feeder_run(st["feeder_hz"] * st.get("feeder_dir", 1))
-             if st["feeder"] else pico.feeder_stop())
-        except Exception as e:  # pragma: no cover - hardware
-            log.warning("Pico control failed: %s", e)
+        with _pico_lock:
+            try:
+                pico.set_leds(st["ring"], st["ring"], st["ring"])
+                pico.run(st["hz"] * st.get("dir", 1)) if st["belt"] else pico.stop()
+                if not _pulsing(st):  # else the pulser thread owns the feeder
+                    (pico.feeder_run(st["feeder_hz"] * st.get("feeder_dir", 1))
+                     if st["feeder"] else pico.feeder_stop())
+            except Exception as e:  # pragma: no cover - hardware
+                log.warning("Pico control failed: %s", e)
 
 
 def _draw_overlay(frame, roi_px, det, st: dict) -> None:  # type: ignore[no-untyped-def]
@@ -234,7 +282,7 @@ def _draw_overlay(frame, roi_px, det, st: dict) -> None:  # type: ignore[no-unty
         "focus=" + st["focus_mode"] + (f" lens={st['lens']:.2f}" if st["focus_mode"] == "manual" else ""),
         "awb=" + st["awb_mode"] + (f" r={st['red']:.2f} b={st['blue']:.2f}" if st["awb_mode"] == "manual" else ""),
         "exp=" + st["exp_mode"] + (f" {st['exp_us']}us g={st['gain']:.1f}" if st["exp_mode"] == "manual" else ""),
-        ("DETECTED" if det.found else "no coin") + f"  area={det.area / area:.3f} circ={det.circularity:.2f}",
+        ("DETECTED" if det.found else "no coin") + f"  area={det.area / area:.3f} circ={det.circularity:.2f} fill={det.fill:.2f}",
     ]
     if st["session_active"]:
         rows.append(f"REC {st['label']}: {st['count']}")
@@ -255,6 +303,8 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
         cfg.get("serial") or {}, lights=True, light_rgb=(st["ring"],) * 3,
         drive_belt=False, belt_speed_hz=st["hz"],
     )
+    if pico is not None:
+        threading.Thread(target=feeder_pulser, args=(pico,), daemon=True).start()
     det_cache: dict = {"key": None, "det": None}
     applied_ver, prev_session = -1, False
     try:
@@ -293,7 +343,10 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                     camera_thread._dedup = self_dedup  # type: ignore[attr-defined]
                 dd = camera_thread._dedup  # type: ignore[attr-defined]
                 if det.found and dd.should_save(det, now):
-                    crop = cap.tight_square_crop(roi_img, det, 0.25, True)
+                    crop = cap.tight_square_crop(
+                        roi_img, det, float(_capc.get("crop_pad_frac", 0.25)),
+                        bool(_capc.get("crop_square", True)),
+                    )
                     if crop is not None:
                         outdir = raw_dir / (st["label"] or "coin")
                         outdir.mkdir(parents=True, exist_ok=True)
@@ -321,12 +374,13 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
         except Exception:  # pragma: no cover
             pass
         if pico is not None:
-            for fn in (lambda: pico.stop(), lambda: pico.feeder_stop(),
-                       lambda: pico.set_leds(0, 0, 0), pico.close):
-                try:
-                    fn()
-                except Exception:  # pragma: no cover
-                    pass
+            with _pico_lock:
+                for fn in (lambda: pico.stop(), lambda: pico.feeder_stop(),
+                           lambda: pico.set_leds(0, 0, 0), pico.close):
+                    try:
+                        fn()
+                    except Exception:  # pragma: no cover
+                        pass
 
 
 # ----- HTTP ----------------------------------------------------------------- #
@@ -392,6 +446,8 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
 <div class=row><button id=feedbtn onclick="toggleFeeder()">Run</button>
  <button id=feeddirbtn onclick="toggleFeederDir()">Fwd</button>
  <label>speed</label><input id=feeder_hz type=range min=50 max=10000 step=50 oninput="sl('feeder_hz',this.value)"><span class=val id=feeder_hzv></span></div>
+<div class=row><label>burst ms (0=continuous)</label><input id=feeder_on_ms type=range min=0 max=3000 step=50 oninput="sl('feeder_on_ms',this.value)"><span class=val id=feeder_on_msv></span>
+ <label>every ms</label><input id=feeder_period_ms type=range min=200 max=10000 step=100 oninput="sl('feeder_period_ms',this.value)"><span class=val id=feeder_period_msv></span></div>
 <h3>Capture</h3>
 <div class=row><input id=label placeholder="label e.g. penny">
  <button id=recbtn onclick="toggleRec()">Start</button></div>
@@ -458,7 +514,7 @@ function delCap(l,n,div){
   fetch('/capture_del?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n),{method:'POST'})
     .then(r=>{if(r.ok)div.remove();});
 }
-function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz']){
+function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz','feeder_on_ms','feeder_period_ms']){
   const sk=(k==='exp')?'exp_us':k;
   const el=document.getElementById(k);if(el&&s[sk]!==undefined){el.value=s[sk];document.getElementById(k+'v').textContent=(+s[sk]).toFixed(2);}}
   document.getElementById('afauto').classList.toggle('active',s.focus_mode==='continuous');
@@ -644,6 +700,7 @@ def main(argv: list[str] | None = None) -> int:
     _raw_dir[0] = raw_dir
     global _state
     _state = default_state(cfg)
+    _capc.update(cfg.get("capture") or {})
 
     cam = threading.Thread(target=camera_thread, args=(cfg, raw_dir), daemon=True)
     cam.start()

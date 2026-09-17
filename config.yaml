@@ -93,11 +93,25 @@ capture:
   blur_ksize: 5
   # Blob area filter as a FRACTION of the ROI area (resolution-independent).
   # A detection only counts as a coin if min <= area/roi_area <= max.
+  # At 1280x720 full-frame ROI one coin is ~0.055 (dime) to ~0.10 (quarter);
+  # two nickels merged are ~0.15, so 0.20 rejects anything bigger than one coin.
   min_area_frac: 0.02
-  max_area_frac: 0.60
+  max_area_frac: 0.20
   # Circularity = 4*pi*area / perimeter^2 (1.0 = perfect circle). Rejects belt
   # seams, shadows and debris streaks. Coins are round, so keep this high.
-  min_circularity: 0.65
+  min_circularity: 0.75
+  # Single-coin gate — all three reject clusters and partial coins, which would
+  # otherwise be saved under the class label and poison training:
+  #   min_fill_frac — blob area / area of its minimum enclosing circle. One
+  #                   coin ~0.95, two overlapping coins ~0.6. Far more decisive
+  #                   than circularity for touching coins.
+  #   reject_border — skip blobs touching the ROI edge (coin partly out of frame).
+  #   isolate       — skip a coin if any other blob (bigger than
+  #                   isolate_min_frac of the ROI) would land inside its crop.
+  min_fill_frac: 0.85
+  reject_border: true
+  isolate: true
+  isolate_min_frac: 0.002
   # brightness method: fixed grayscale threshold, or null to use Otsu.
   bright_thresh: null
   # Set true if coins are DARKER than the belt (e.g. dark coins on a bright belt).
@@ -138,6 +152,11 @@ capture:
   # Coin feeder (second stepper, firmware FRUN). Rate that reliably ejects coins
   # one at a time onto the belt on this rig; the webcal Feeder slider starts here.
   feeder_speed_hz: 8650        # tuned 2026-09-16
+  # Feeder pulsing: run the feeder for feeder_on_ms out of every
+  # feeder_period_ms so the belt clears each burst before the next. This is the
+  # coin-spacing knob; 0 = run continuously.
+  feeder_on_ms: 0
+  feeder_period_ms: 2000
   # WS2812 ring light (on the Pico, GP16) for even, consistent illumination.
   # On by default for every capture/calibrate session and turned off on exit.
   # Keep it neutral white (R=G=B) so copper/silver render true for the model;
