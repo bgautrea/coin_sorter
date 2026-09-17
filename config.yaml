@@ -134,7 +134,10 @@ capture:
   # with --drive-belt or set true here. Keep the speed gentle so coins do not
   # blow past the dedup band between frames.
   drive_belt: false
-  belt_speed_hz: 800
+  belt_speed_hz: 550           # tuned 2026-09-16: coins stay in frame, no blur at 1500us
+  # Coin feeder (second stepper, firmware FRUN). Rate that reliably ejects coins
+  # one at a time onto the belt on this rig; the webcal Feeder slider starts here.
+  feeder_speed_hz: 8650        # tuned 2026-09-16
   # WS2812 ring light (on the Pico, GP16) for even, consistent illumination.
   # On by default for every capture/calibrate session and turned off on exit.
   # Keep it neutral white (R=G=B) so copper/silver render true for the model;
