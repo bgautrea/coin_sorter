@@ -155,7 +155,7 @@ def apply_setting(state: dict, key: str, val: str) -> bool:
             state["feeder_dir"] = -1 if val in ("-1", "rev", "reverse") else 1
             return True
         elif key == "feeder_hz":
-            state["feeder_hz"] = int(_clamp(float(val), 1, 5000))
+            state["feeder_hz"] = int(_clamp(float(val), 1, 10000))
             return True
     except (ValueError, TypeError):
         pass
@@ -391,7 +391,7 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
 <h3>Feeder</h3>
 <div class=row><button id=feedbtn onclick="toggleFeeder()">Run</button>
  <button id=feeddirbtn onclick="toggleFeederDir()">Fwd</button>
- <label>speed</label><input id=feeder_hz type=range min=50 max=5000 step=25 oninput="sl('feeder_hz',this.value)"><span class=val id=feeder_hzv></span></div>
+ <label>speed</label><input id=feeder_hz type=range min=50 max=10000 step=50 oninput="sl('feeder_hz',this.value)"><span class=val id=feeder_hzv></span></div>
 <h3>Capture</h3>
 <div class=row><input id=label placeholder="label e.g. penny">
  <button id=recbtn onclick="toggleRec()">Start</button></div>

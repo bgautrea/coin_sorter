@@ -13,7 +13,8 @@
 #   COIN_SENSOR_ENABLED - IR break-beam on GP11
 
 import sys, select, time
-from machine import Pin, mem32, Timer
+from machine import Pin, mem32
+from rp2 import PIO, StateMachine, asm_pio
 from neopixel import NeoPixel
 
 # ============================================================
@@ -42,8 +43,62 @@ def belt_enable(on):
 
 LED = Pin(25, Pin.OUT, value=0)
 
-# Software timer used for non-blocking continuous belt motion (RUN/STOP).
-belt_timer = Timer()
+# ============================================================
+# PIO step-pulse generator (continuous RUN / FRUN)
+#
+# machine.Timer callbacks are soft-scheduled Python on the rp2 port and top
+# out around 1-2 kHz of toggles, so a Timer-driven square wave silently
+# flat-lines well below the requested step rate. A PIO state machine emits
+# an exact square wave at any frequency with zero CPU involvement, and each
+# stepper gets its own SM so belt and feeder are fully independent.
+# ============================================================
+@asm_pio(set_init=PIO.OUT_HIGH)
+def _step_wave():
+    # 32 cycles low, 32 cycles high -> one step per 64 SM cycles. Pulse width
+    # is >= 2.2us (TB6600 minimum) at every rate we can reach.
+    set(pins, 0) [31]
+    set(pins, 1) [31]
+
+PIO_CYCLES_PER_STEP = 64
+STEP_MIN_HZ   = 30      # SM clock floor (~1.9 kHz) / 64
+RAMP_START_HZ = 400     # a stepper can start cold up to about here
+RAMP_STEPS    = 25      # accel ramp resolution ...
+RAMP_STEP_MS  = 10      # ... and duration (25 x 10ms = 250ms to target)
+
+class StepGen:
+    """Continuous step pulses on one PIO state machine."""
+    def __init__(self, sm_id, gpio):
+        self.gpio = gpio
+        self.pin = Pin(gpio, Pin.OUT, value=1)
+        self.sm = StateMachine(sm_id)
+        self.hz = 0
+
+    def _set(self, hz):
+        self.sm.active(0)
+        self.sm.init(_step_wave, freq=hz * PIO_CYCLES_PER_STEP, set_base=self.pin)
+        self.sm.active(1)
+        self.hz = hz
+
+    def start(self, hz):
+        """Run at `hz` steps/s (unsigned). Ramps up from the current rate so a
+        cold start to a high rate doesn't stall the motor; slows instantly."""
+        hz = max(STEP_MIN_HZ, int(hz))
+        f0 = max(self.hz, RAMP_START_HZ)
+        if hz > f0:
+            for i in range(1, RAMP_STEPS + 1):
+                self._set(f0 + (hz - f0) * i // RAMP_STEPS)
+                time.sleep_ms(RAMP_STEP_MS)
+        else:
+            self._set(hz)
+        return hz
+
+    def stop(self):
+        """Halt and hand the pin back to GPIO (idle high) for bit-bang moves."""
+        self.sm.active(0)
+        self.pin = Pin(self.gpio, Pin.OUT, value=1)
+        self.hz = 0
+
+belt_gen = StepGen(0, 2)
 
 # ============================================================
 # Feeder stepper (TB6600 / NEMA17) - spins coins onto the belt
@@ -62,7 +117,7 @@ def feeder_enable(on):
     """Inverted ENA logic for this driver clone (matches the belt)."""
     FENA.value(1 if on else 0)
 
-feeder_timer = Timer()
+feeder_gen = StepGen(1, 18)
 
 # ============================================================
 # Ring light (WS2812 on GP16) - camera illumination
@@ -148,39 +203,32 @@ def belt_move(steps):
     state["busy"] = False
     LED.off()
 
-def _belt_tick(t):
-    """Timer ISR: toggle PUL to emit a square wave. Allocation-free.
-
-    Step rate is half the timer frequency (one rising edge per full cycle).
-    belt_position is intentionally not tracked while free-running to keep the
-    callback safe.
-    """
-    PUL.value(0 if PUL.value() else 1)
-
 def belt_run(hz):
     """Start non-blocking continuous belt motion. hz>0 forward, hz<0 reverse.
 
-    Returns the signed step rate actually applied. The hardware timer drives
-    PUL in the background, so the command loop stays responsive (STATUS/STOP
-    work mid-run). STOP, MOVE or SORT halt it.
+    Returns the signed step rate actually applied. PIO drives PUL in the
+    background, so the command loop stays responsive (STATUS/STOP work
+    mid-run). STOP, MOVE or SORT halt it. belt_position is not tracked while
+    free-running.
     """
-    belt_stop()
     hz = int(hz)
     if hz == 0:
+        belt_stop()
         return 0
-    DIR.value(1 if hz > 0 else 0)
-    state["speed_hz"] = abs(hz)
+    fwd = hz > 0
+    if state["running"] and DIR.value() != (1 if fwd else 0):
+        belt_stop()  # direction flip: come to rest before reversing
+    DIR.value(1 if fwd else 0)
     belt_enable(True)
     state["running"] = True
     state["busy"] = True
     LED.on()
-    belt_timer.init(freq=abs(hz) * 2, mode=Timer.PERIODIC, callback=_belt_tick)
-    return hz
+    state["speed_hz"] = belt_gen.start(abs(hz))
+    return state["speed_hz"] if fwd else -state["speed_hz"]
 
 def belt_stop():
     """Halt continuous belt motion (no-op if not running). Leaves PUL idle."""
-    belt_timer.deinit()
-    PUL.value(1)
+    belt_gen.stop()
     if state["running"]:
         state["running"] = False
         state["busy"] = False
@@ -204,31 +252,28 @@ def feeder_move(steps):
         state["feeder_position"] += 1 if direction else -1
     state["busy"] = False
 
-def _feeder_tick(t):
-    """Timer ISR: toggle FPUL to emit a square wave. Allocation-free."""
-    FPUL.value(0 if FPUL.value() else 1)
-
 def feeder_run(hz):
     """Start non-blocking continuous feeder motion. hz>0 fwd, hz<0 rev.
 
-    Independent of the belt timer, so both can free-run at once. Returns the
-    signed step rate actually applied.
+    Own PIO state machine, so it free-runs independently of the belt.
+    Returns the signed step rate actually applied.
     """
-    feeder_stop()
     hz = int(hz)
     if hz == 0:
+        feeder_stop()
         return 0
-    FDIR.value(1 if hz > 0 else 0)
-    state["feeder_speed_hz"] = abs(hz)
+    fwd = hz > 0
+    if state["feeder_running"] and FDIR.value() != (1 if fwd else 0):
+        feeder_stop()  # direction flip: come to rest before reversing
+    FDIR.value(1 if fwd else 0)
     feeder_enable(True)
     state["feeder_running"] = True
-    feeder_timer.init(freq=abs(hz) * 2, mode=Timer.PERIODIC, callback=_feeder_tick)
-    return hz
+    state["feeder_speed_hz"] = feeder_gen.start(abs(hz))
+    return state["feeder_speed_hz"] if fwd else -state["feeder_speed_hz"]
 
 def feeder_stop():
     """Halt continuous feeder motion (no-op if not running). Leaves FPUL idle."""
-    feeder_timer.deinit()
-    FPUL.value(1)
+    feeder_gen.stop()
     if state["feeder_running"]:
         state["feeder_running"] = False
 
