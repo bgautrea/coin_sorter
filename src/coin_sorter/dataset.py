@@ -4,13 +4,16 @@ The on-disk layout matches what ``capture.py`` produces and what Ultralytics
 classification training expects::
 
     data/raw/
-        penny/
+        penny_lincoln_obv/
             <timestamp>.jpg
             ...
-        nickel/
-        dime/
-        quarter/
+        penny_wheat_rev/
+        nickel_jefferson_obv/
+        ...
         reject/
+
+Folder names are the (denomination, design, side) labels from
+``classifier.labels`` in config.yaml; ``_rejected/`` is ignored.
 
 This module is consumed only on the training side (Colab / workstation).
 It deliberately does ``import torch`` at function scope so the Pi never
@@ -39,7 +42,7 @@ def discover_classes(root: Path) -> list[str]:
     Sorted alphabetically because that is how Ultralytics assigns class indices,
     and we want training-time and inference-time indices to agree.
     """
-    classes = sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+    classes = sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith((".", "_")))
     if not classes:
         raise ValueError(f"No class subdirectories found under {root}")
     return classes

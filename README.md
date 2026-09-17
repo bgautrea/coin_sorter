@@ -89,99 +89,91 @@ groups | tr ' ' '\n' | grep dialout || sudo usermod -aG dialout "$USER"
 
 ## Data capture workflow
 
-Capture is **belt-fed**: load one denomination, run the belt, and let coins
-pass under the camera. `capture.py` crops to the belt ROI, runs a coin-presence
-gate so empty-belt frames are not saved, and tight-crops around each coin so it
-fills the saved image (which is what the 224×224 whole-image classifier wants).
+Capture is **belt-fed**: a feeder stepper drops coins onto the belt, they pass
+under the camera, and a **single-coin gate** decides what gets saved. Each save
+is a tight square crop around one whole, isolated coin.
 
-A **WS2812 ring light** (driven by the Pico on GP16) is turned on for every
-capture and calibration session and off on exit, for even, consistent
-illumination. It defaults to neutral white (`capture.light_rgb`) so copper and
-silver render true; lower the values if frames are over-exposed, or pass
-`--no-lights` to disable. Wiring: ring data → Pico GP16 (330–470 Ω series, 5 V
-logic level-shift recommended), 5 V from a supply with the ground tied to the
-Pico, ~1000 µF across the ring's 5 V/GND.
+### Labels: (denomination, design, side)
 
-### Web UI (recommended on a headless Pi)
+The goal is to pull collectible varieties out of a mixed batch, and the
+identifying design is often on **one side only** (a wheat cent's obverse is the
+same Lincoln as a memorial cent). So classes are `denomination_design_side`,
+e.g. `penny_wheat_rev`, `nickel_buffalo_obv` — see `classifier.labels` in
+`config.yaml`, and `sorter.sort_map` for which labels go to the `keep` /
+`common` / `check` bins. The `check` bin (coins ambiguous from the visible
+side) is simply re-fed: each pass halves it.
+
+The capture flow that follows from this is: **feed one design per batch**, then
+**tag sides in the web UI** afterwards (a coin lands heads-up or tails-up at
+random).
+
+### Lighting recipe (rig-specific, in `config.local.yaml`)
+
+The internal ring light mirrors off the belt as a specular streak that breaks
+detection; the working recipe is the ring **off**, an off-axis **external
+light** (switched by hand — check the preview is not black before a run), a
+manual short shutter (`exposure_us: 1500`) to freeze belt motion, and manual
+white balance. **Do not change WB between batches**: colour is the strongest
+cue between denominations, and a WB drift inside one class teaches the model
+the tint instead of the coin. Colour robustness comes from augmentation at
+training time, applied uniformly to every class.
+
+### Web UI
 
 ```bash
 python -m coin_sorter.webcal        # then open http://<pi-ip>:8080/
 ```
 
-A browser tool with a **live preview + coin-detection overlay** and sliders for
-**focus** (lens position in dioptres), **white balance** (red/blue gains — fix
-the magenta cast the LEDs cause), **ROI**, and the **gate thresholds**. You can
-also **run belt-fed capture** from the page: set a label, Start, and watch the
-saved count climb as coins go by. "Show config" emits a `config.local.yaml`
-snippet so the tuned focus/WB/ROI/thresholds lock into the CLI tools.
+Live preview with the detection overlay (`area`, `circ`, `fill`, and `sharp` —
+a focus figure of merit; peak it on the *face* of a nickel sitting on the belt,
+depth of field at this working distance is about ±1 mm), sliders for focus,
+WB, exposure, ROI and gate thresholds, and the belt / feeder controls.
 
-The web UI **owns the camera while running** — stop it before using the CLI
-`capture`/`--calibrate` commands below (only one process can open the camera).
+**Feeder**: speed plus *burst ms* / *every ms* pulsing. Pulsing is the
+coin-spacing knob — the feeder runs in short bursts and the belt clears each
+burst before the next. Working values for nickels: 3200 Hz, 300 ms every
+1500 ms, belt 550 Hz. The firmware releases both stepper drivers 1 s after
+motion stops (an idle TB6600 at full holding current cooked the feeder motor
+once); check each driver's current DIPs against its motor's rating — the feeder
+is a 0.7 A 17HS4023.
 
-### 1. Calibrate the ROI and thresholds (CLI, one-time)
+**Capture**: set the label to the *design* you loaded (e.g. `nickel_jefferson`
+— the side is added when tagging), Start, then belt → feeder. The count climbs
+only for crops that pass the gate.
 
-```bash
-python -m coin_sorter.capture --label _calib --calibrate
-```
+**Tagging**: in the Captures panel enter the label, Refresh, then **Tag**. Each
+crop is shown large; press the number key for its (design, side) class and it
+is moved into that folder and the next one appears. `s` skips, `x` deletes,
+`Esc` stops. Targets are the configured labels sharing the denomination prefix.
 
-This grabs a frame, runs the detector, and writes `roi_snapshot.jpg` +
-`overlay.jpg` (detected contour/bbox/centroid and the dedup band) to
-`data/processed/_calib/`, logging the ROI rectangle, blob `area_frac`, and
-`circularity`. Copy the snapshot to a workstation, then set the belt region and
-tune the gate in **`config.local.yaml`** (gitignored, deep-merged over
-`config.yaml`):
+"Show config" emits a `config.local.yaml` snippet with the tuned camera values.
+The web UI **owns the camera** — stop it before using the CLI below.
 
-```yaml
-camera:
-  roi: [0.20, 0.15, 0.60, 0.70]   # x, y, w, h as fractions of the full frame
-capture:
-  min_area_frac: 0.02             # bracket the area_frac the calibrator logged
-  max_area_frac: 0.60
-  min_circularity: 0.65
-  # invert: true                  # if coins are darker than the belt
-  # method: absdiff               # if coin/belt brightness are too close to threshold
-```
+### The single-coin gate
 
-Re-run `--calibrate` with a coin in the ROI until the overlay shows exactly one
-clean blob on the coin (and empty belt yields no detection). Then delete the
-`_calib` snapshots before zipping.
-
-### 2. Capture each class
+Besides area and circularity, a blob must have `fill` (area ÷ its
+min-enclosing-circle area; one coin ≈ 0.95, two overlapping ≈ 0.6) above
+`min_fill_frac`, not touch the ROI border, and have no other blob inside its
+crop window (`isolate`). Clusters and half-coins are never saved under a class
+label. To re-gate crops captured earlier:
 
 ```bash
-python -m coin_sorter.capture --label penny   --count 250
-python -m coin_sorter.capture --label nickel  --count 250
-python -m coin_sorter.capture --label dime    --count 250
-python -m coin_sorter.capture --label quarter --count 250
-# 'reject' (foreign coins, debris, multi-coin clusters, empty belt) bypasses the
-# single-coin gate automatically; feed junk and use --interval for cadence:
-python -m coin_sorter.capture --label reject  --interval 0.4 --count 250
+python scripts/prune_crops.py            # report per label
+python scripts/prune_crops.py --apply    # move failures to data/raw/_rejected/<label>/
 ```
 
-With the gate on (the default), **`--count` counts coins saved**, not frames
-grabbed. By default one image is saved per coin as its centroid crosses the
-middle of the ROI (`dedup_mode: centroid_band`). For more pose variety per coin
-use `--dedup min_interval`; for every gated frame use `--dedup none`. Pass
-`--no-gate` to fall back to the legacy "save the ROI-cropped frame every
-`--interval`" behaviour.
+`_rejected/` is excluded from training and from `zip_dataset.sh`.
 
-Rough rule of thumb: 200–500 images per class is enough for a nano YOLO-cls to
-converge. Aim for balanced counts (see "Class imbalance" below). Vary lighting
-and orientation across the run, and spot-check `data/raw/<label>/` afterwards —
-coins should be centred and filling the frame, with no empty-belt shots.
-
-### Optional: drive the belt from the capture tool
+### CLI capture (alternative to the web UI)
 
 ```bash
-python -m coin_sorter.capture --label penny --count 250 --drive-belt --belt-speed 800
+python -m coin_sorter.capture --label _calib --calibrate      # ROI/threshold snapshot
+python -m coin_sorter.capture --label nickel_jefferson --count 250 --drive-belt
+python -m coin_sorter.capture --label reject --interval 0.4 --count 250   # bypasses the gate
 ```
 
-This issues the firmware's non-blocking `RUN <hz>` command, which drives the
-stepper from a hardware timer so the belt runs continuously while we capture
-(the link stays responsive; the tool sends `STOP` on exit). Any Pico error is
-logged and capture continues belt-less. Default is **off**. Keep the speed
-gentle so coins don't blow past the dedup band between frames. The firmware
-lives in `firmware/main.py`.
+`--count` counts coins saved. `dedup_mode` picks one save per coin
+(`centroid_band`) or a few pose samples per coin (`min_interval`).
 
 ## Training workflow (Colab)
 

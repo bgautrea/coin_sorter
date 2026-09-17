@@ -45,6 +45,7 @@ _running = [True]
 _ctrl_ver = [0]  # bumped when a hardware control (focus/wb/ring/belt) changes
 _state: dict = {}
 _capc: dict = {}  # config['capture'] — gate keys with no slider pass through as-is
+_labels: list = []  # config['classifier']['labels'] — tag targets in the gallery
 _pico_lock = threading.Lock()  # camera thread and feeder pulser share the Pico
 _raw_dir = [None]  # base directory for captured crops; set in main()
 
@@ -85,7 +86,7 @@ def default_state(cfg: dict) -> dict:
         "feeder_period_ms": int(capc.get("feeder_period_ms", 2000)),
         "session_active": False, "label": "", "count": 0,
         # live readout (written by the camera thread)
-        "det": False, "area_frac": 0.0, "det_circ": 0.0,
+        "det": False, "area_frac": 0.0, "det_circ": 0.0, "sharp": 0.0,
     }
 
 
@@ -265,7 +266,7 @@ def _apply_hw(picam, pico, st: dict) -> None:  # type: ignore[no-untyped-def]
                 log.warning("Pico control failed: %s", e)
 
 
-def _draw_overlay(frame, roi_px, det, st: dict) -> None:  # type: ignore[no-untyped-def]
+def _draw_overlay(frame, roi_px, det, st: dict, sharp: float = 0.0) -> None:  # type: ignore[no-untyped-def]
     H, W = frame.shape[:2]
     x, y, w, h = roi_px if roi_px else (0, 0, W, H)
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -282,7 +283,8 @@ def _draw_overlay(frame, roi_px, det, st: dict) -> None:  # type: ignore[no-unty
         "focus=" + st["focus_mode"] + (f" lens={st['lens']:.2f}" if st["focus_mode"] == "manual" else ""),
         "awb=" + st["awb_mode"] + (f" r={st['red']:.2f} b={st['blue']:.2f}" if st["awb_mode"] == "manual" else ""),
         "exp=" + st["exp_mode"] + (f" {st['exp_us']}us g={st['gain']:.1f}" if st["exp_mode"] == "manual" else ""),
-        ("DETECTED" if det.found else "no coin") + f"  area={det.area / area:.3f} circ={det.circularity:.2f} fill={det.fill:.2f}",
+        ("DETECTED" if det.found else "no coin") + f"  area={det.area / area:.3f} circ={det.circularity:.2f} fill={det.fill:.2f}"
+        + (f"  sharp={sharp:.0f}" if det.found else ""),
     ]
     if st["session_active"]:
         rows.append(f"REC {st['label']}: {st['count']}")
@@ -330,6 +332,7 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                 det_cache["key"] = key
                 det_cache["det"] = cap.CoinDetector(params, rw, rh)
             det = det_cache["det"].detect(roi_img)
+            sharp = cap.coin_sharpness(roi_img, det)
 
             # capture session
             if st["session_active"]:
@@ -361,8 +364,9 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                 _state["det"] = det.found
                 _state["area_frac"] = det.area / roi_area
                 _state["det_circ"] = det.circularity
+                _state["sharp"] = sharp
 
-            _draw_overlay(frame, roi_px, det, st)
+            _draw_overlay(frame, roi_px, det, st, sharp)
             ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
                 with _frame_lock:
@@ -403,6 +407,12 @@ h3{margin:6px 0;font-size:14px;color:#8cf;border-bottom:1px solid #333}
 pre{background:#000;padding:8px;border-radius:4px;white-space:pre-wrap;font-size:12px}
 input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padding:5px;border-radius:4px;width:120px}
 .gallery{display:flex;flex-wrap:wrap;gap:6px;max-height:460px;overflow:auto;margin-top:8px}
+#tagger{display:none;margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px;background:#181818}
+#tagimg{width:320px;height:320px;object-fit:contain;background:#000;border-radius:4px;display:block}
+#tagbtns{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+#tagbtns button{font-size:12px;padding:4px 8px}
+#tagbtns button b{color:#9cf;margin-right:4px}
+.thumb.sel img{outline:2px solid #0a6}
 .thumb{position:relative;width:92px;height:92px}
 .thumb img{width:92px;height:92px;object-fit:cover;border:1px solid #333;border-radius:4px;cursor:zoom-in}
 .thumb button{position:absolute;top:2px;right:2px;width:20px;height:20px;padding:0;line-height:18px;
@@ -462,6 +472,19 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
  <input id=gallabel placeholder="label e.g. penny">
  <button onclick="loadCaptures()">Refresh</button>
  <span id=galcount style="font-size:12px;color:#9cf"></span>
+ <button onclick="startTag()">Tag</button>
+</div>
+<div id=tagger>
+ <div style="display:flex;gap:10px;align-items:flex-start">
+  <img id=tagimg>
+  <div style="font-size:12px;color:#aaa;max-width:260px">
+   <div id=tagname style="font-family:monospace;color:#9cf"></div>
+   <div id=tagpos></div>
+   <p>Press a key to move this crop into that label and advance.
+   <b>s</b> skip &nbsp; <b>x</b> delete &nbsp; <b>Esc</b> stop</p>
+   <div id=tagbtns></div>
+  </div>
+ </div>
 </div>
 <div id=gallery class=gallery></div>
 </div>
@@ -506,15 +529,51 @@ function loadCaptures(){
       img.onclick=()=>window.open(img.src,'_blank');
       const b=document.createElement('button');b.textContent='✕';b.title='delete';
       b.onclick=()=>delCap(l,n,div);
-      div.appendChild(img);div.appendChild(b);g.appendChild(div);
+      div.appendChild(img);div.appendChild(b);g.appendChild(div);tagDiv[n]=div;
     }
   });
 }
+let LABELS=[], tagQ=[], tagDiv={}, tagOn=false;
+function tagTargets(l){const pre=l.split('_')[0];const t=LABELS.filter(x=>x.startsWith(pre+'_'));return t.length?t:LABELS;}
+function tagKey(i){return i<9?String(i+1):String.fromCharCode(97+i-9);}
+function startTag(){
+  const l=document.getElementById('gallabel').value;if(!l)return;
+  tagQ=[...document.querySelectorAll('#gallery .thumb img')].map(i=>i.title);
+  if(!tagQ.length){loadCaptures();return;}
+  const T=tagTargets(l),bt=document.getElementById('tagbtns');bt.innerHTML='';
+  T.forEach((t,i)=>{const b=document.createElement('button');b.innerHTML='<b>'+tagKey(i)+'</b>'+t;
+    b.onclick=()=>tagTo(t);bt.appendChild(b);});
+  tagOn=true;document.getElementById('tagger').style.display='block';showTag();
+}
+function showTag(){
+  const l=document.getElementById('gallabel').value;
+  document.querySelectorAll('#gallery .thumb.sel').forEach(d=>d.classList.remove('sel'));
+  if(!tagQ.length){stopTag();loadCaptures();return;}
+  const n=tagQ[0];document.getElementById('tagimg').src='/capture_img?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n);
+  document.getElementById('tagname').textContent=n;
+  document.getElementById('tagpos').textContent=tagQ.length+' left in this page';
+  const d=tagDiv[n];if(d){d.classList.add('sel');d.scrollIntoView({block:'nearest'});}
+}
+function tagTo(t){
+  const l=document.getElementById('gallabel').value,n=tagQ.shift();
+  fetch('/capture_move?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n)+'&to='+encodeURIComponent(t),{method:'POST'})
+    .then(r=>{if(r.ok&&tagDiv[n])tagDiv[n].remove();});
+  showTag();
+}
+function stopTag(){tagOn=false;document.getElementById('tagger').style.display='none';}
+document.addEventListener('keydown',e=>{
+  if(!tagOn||e.target.tagName==='INPUT')return;
+  if(e.key==='Escape'){stopTag();return;}
+  if(e.key==='s'){tagQ.shift();showTag();return;}
+  if(e.key==='x'){const l=document.getElementById('gallabel').value,n=tagQ.shift();delCap(l,n,tagDiv[n]);showTag();return;}
+  const T=tagTargets(document.getElementById('gallabel').value),i=T.findIndex((_,i)=>tagKey(i)===e.key);
+  if(i>=0)tagTo(T[i]);
+});
 function delCap(l,n,div){
   fetch('/capture_del?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n),{method:'POST'})
-    .then(r=>{if(r.ok)div.remove();});
+    .then(r=>{if(r.ok&&div)div.remove();});
 }
-function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz','feeder_on_ms','feeder_period_ms']){
+function init(s){LABELS=s.labels||[];for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz','feeder_on_ms','feeder_period_ms']){
   const sk=(k==='exp')?'exp_us':k;
   const el=document.getElementById(k);if(el&&s[sk]!==undefined){el.value=s[sk];document.getElementById(k+'v').textContent=(+s[sk]).toFixed(2);}}
   document.getElementById('afauto').classList.toggle('active',s.focus_mode==='continuous');
@@ -529,7 +588,7 @@ function init(s){for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y
 fetch('/state').then(r=>r.json()).then(init);
 setInterval(()=>{fetch('/status').then(r=>r.json()).then(s=>{
   document.getElementById('stat').textContent=(s.detected?'● COIN':'○ none')+
-    '  area='+s.area_frac.toFixed(3)+'  circ='+s.circ.toFixed(2);
+    '  area='+s.area_frac.toFixed(3)+'  circ='+s.circ.toFixed(2)+(s.detected?'  sharp='+s.sharp.toFixed(0):'');
   document.getElementById('recstat').textContent=s.session?('REC '+s.label+': '+s.count):'idle';
 });},500);
 </script></body></html>
@@ -618,13 +677,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             with _lock:
                 s = {
                     "detected": _state["det"], "area_frac": round(_state["area_frac"], 4),
-                    "circ": round(_state["det_circ"], 3), "session": _state["session_active"],
+                    "circ": round(_state["det_circ"], 3), "sharp": round(_state["sharp"], 1),
+                    "session": _state["session_active"],
                     "label": _state["label"], "count": _state["count"], "belt": _state["belt"],
                 }
             self._send(200, "application/json", json.dumps(s).encode())
         elif u.path == "/state":
             with _lock:
                 s = dict(_state)
+            s["labels"] = list(_labels)
             self._send(200, "application/json", json.dumps(s).encode())
         elif u.path == "/config":
             with _lock:
@@ -668,7 +729,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
-        if u.path == "/capture_del":
+        if u.path == "/capture_move":
+            # Tag a crop: move it into another label folder (obv/rev tagging,
+            # or fixing a mis-fed coin). Target must be a configured label.
+            p = _capture_file(q.get("label", [""])[0], q.get("name", [""])[0])
+            to = q.get("to", [""])[0]
+            dst = _label_dir(to) if to in _labels else None
+            ok = False
+            if p is not None and p.is_file() and dst is not None:
+                try:
+                    dst.mkdir(parents=True, exist_ok=True)
+                    p.rename(dst / p.name)
+                    ok = True
+                except OSError as e:
+                    log.warning("move failed: %s", e)
+            self.send_response(204 if ok else 400)
+            self.end_headers()
+        elif u.path == "/capture_del":
             p = _capture_file(q.get("label", [""])[0], q.get("name", [""])[0])
             ok = False
             if p is not None and p.is_file():
@@ -701,6 +778,7 @@ def main(argv: list[str] | None = None) -> int:
     global _state
     _state = default_state(cfg)
     _capc.update(cfg.get("capture") or {})
+    _labels.extend((cfg.get("classifier") or {}).get("labels") or [])
 
     cam = threading.Thread(target=camera_thread, args=(cfg, raw_dir), daemon=True)
     cam.start()

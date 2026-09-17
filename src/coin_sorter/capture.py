@@ -440,6 +440,19 @@ class Deduper:
 # --------------------------------------------------------------------------- #
 
 
+def coin_sharpness(roi_bgr: np.ndarray, det: Detection) -> float:
+    """Focus figure of merit for the detected coin: variance of the Laplacian
+    over its bbox. Unitless and scene-dependent — peak it, don't threshold it.
+    Returns 0.0 when nothing is detected."""
+    if not det.found or det.bbox is None:
+        return 0.0
+    x, y, w, h = det.bbox
+    if w < 8 or h < 8:
+        return 0.0
+    gray = cv2.cvtColor(roi_bgr[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
 def tight_square_crop(
     roi_bgr: np.ndarray, det: Detection, pad_frac: float, square: bool
 ) -> np.ndarray | None:

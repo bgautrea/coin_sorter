@@ -27,7 +27,8 @@ fi
 echo "Bundling $SRC_DIR -> $OUT_ZIP"
 # Zip from inside data/raw so class folders sit at the top level of the archive
 # (this is what the Colab notebook expects).
-( cd "$SRC_DIR" && zip -qr "$OUT_ZIP" . -x "*.gitkeep" )
+# _rejected/ holds quarantined crops (prune_crops.py) and must not train.
+( cd "$SRC_DIR" && zip -qr "$OUT_ZIP" . -x "*.gitkeep" -x "_rejected/*" -x "_calib/*" )
 
 SIZE=$(du -h "$OUT_ZIP" | cut -f1)
 echo "Done: $OUT_ZIP ($SIZE)"

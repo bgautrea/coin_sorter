@@ -6,7 +6,8 @@ Pipeline:
     3. For each frame:
         a. (TODO) Gate on motion / coin presence so we do not classify empty belt.
         b. Run the ONNX classifier.
-        c. If confidence > threshold, send ``SORT <label>`` to the Pico.
+        c. Map the label to a physical bin via ``sorter.sort_map`` (unknown
+           labels and low confidence -> ``check``) and send ``SORT <bin>``.
         d. Cool down for ``sorter.cooldown_ms`` so we do not double-sort.
 
 The stub classifier (when no ONNX model is present) lets us exercise the
@@ -81,6 +82,9 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
 
     classifier = CoinClassifier.from_config(cfg)
     threshold = float(cfg["classifier"]["confidence_threshold"])
+    label_to_bin = {
+        lab: b for b, labs in (sorter_cfg.get("sort_map") or {}).items() for lab in (labs or [])
+    }
     cooldown_s = float(sorter_cfg["cooldown_ms"]) / 1000.0
     target_period_s = 1.0 / float(sorter_cfg["inference_fps"])
 
@@ -124,12 +128,12 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
                 if _should_classify(frame):
                     label, conf = classifier.predict(frame)
                     log.info("predict=%s conf=%.3f", label, conf)
-                    if conf >= threshold:
-                        try:
-                            pico.sort(label)
-                            time.sleep(cooldown_s)
-                        except PicoError as e:
-                            log.error("SORT %s failed: %s", label, e)
+                    bin_ = label_to_bin.get(label, "check") if conf >= threshold else "check"
+                    try:
+                        pico.sort(bin_)
+                        time.sleep(cooldown_s)
+                    except PicoError as e:
+                        log.error("SORT %s (%s) failed: %s", bin_, label, e)
 
                 # Pace the loop to roughly inference_fps.
                 elapsed = time.monotonic() - t0
