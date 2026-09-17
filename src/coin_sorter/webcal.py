@@ -487,6 +487,8 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
 <div class=row>
  <input id=gallabel placeholder="label e.g. penny">
  <button onclick="loadCaptures()">Refresh</button>
+ <button onclick="galPage(-1)">&lsaquo; Prev</button>
+ <button onclick="galPage(1)">Next &rsaquo;</button>
  <span id=galcount style="font-size:12px;color:#9cf"></span>
  <button onclick="startTag()">Tag</button>
 </div>
@@ -497,7 +499,7 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
    <div id=tagname style="font-family:monospace;color:#9cf"></div>
    <div id=tagpos></div>
    <p>Press a key to move this crop into that label and advance.
-   <b>s</b> skip &nbsp; <b>x</b> delete &nbsp; <b>Esc</b> stop</p>
+   <b>s</b> skip &nbsp; <b>u</b> undo last &nbsp; <b>x</b> delete &nbsp; <b>Esc</b> stop</p>
    <div id=tagbtns></div>
   </div>
  </div>
@@ -531,12 +533,15 @@ function toggleRec(){rec=!rec;const b=document.getElementById('recbtn');
   else{fetch('/capture?action=stop');b.textContent='Start';b.classList.remove('active');
     document.getElementById('gallabel').value=document.getElementById('label').value||'coin';loadCaptures();}}
 function showCfg(){fetch('/config').then(r=>r.text()).then(t=>document.getElementById('cfg').textContent=t);}
+let galOffset=0;
+function galPage(dir){galOffset=Math.max(0,galOffset+dir*80);loadCaptures();}
 function loadCaptures(){
   const l=document.getElementById('gallabel').value||document.getElementById('label').value||'coin';
   document.getElementById('gallabel').value=l;
-  fetch('/captures?label='+encodeURIComponent(l)).then(r=>r.json()).then(d=>{
-    document.getElementById('galcount').textContent=
-      d.total+' total'+(d.total>d.files.length?(' (showing newest '+d.files.length+')'):'');
+  fetch('/captures?label='+encodeURIComponent(l)+'&offset='+galOffset).then(r=>r.json()).then(d=>{
+    if(d.offset>0&&!d.files.length){galOffset=Math.max(0,galOffset-80);loadCaptures();return;}
+    document.getElementById('galcount').textContent=d.files.length?
+      (d.offset+1)+'–'+(d.offset+d.files.length)+' of '+d.total+' (newest first)':'0 of '+d.total;
     const g=document.getElementById('gallery');g.innerHTML='';
     for(const n of d.files){
       const div=document.createElement('div');div.className='thumb';
@@ -549,7 +554,7 @@ function loadCaptures(){
     }
   });
 }
-let LABELS=[], tagQ=[], tagDiv={}, tagOn=false;
+let LABELS=[], tagQ=[], tagDiv={}, tagOn=false, tagUndo=[];
 function tagTargets(l){const pre=l.split('_')[0];const t=LABELS.filter(x=>x.startsWith(pre+'_'));return t.length?t:LABELS;}
 function tagKey(i){return i<9?String(i+1):String.fromCharCode(97+i-9);}
 function startTag(){
@@ -573,14 +578,20 @@ function showTag(){
 function tagTo(t){
   const l=document.getElementById('gallabel').value,n=tagQ.shift();
   fetch('/capture_move?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n)+'&to='+encodeURIComponent(t),{method:'POST'})
-    .then(r=>{if(r.ok&&tagDiv[n])tagDiv[n].remove();});
+    .then(r=>{if(r.ok){tagUndo.push({from:l,name:n,to:t});if(tagDiv[n])tagDiv[n].hidden=true;}});
   showTag();
+}
+function tagUndoLast(){
+  const u=tagUndo.pop();if(!u)return;
+  fetch('/capture_move?label='+encodeURIComponent(u.to)+'&name='+encodeURIComponent(u.name)+'&to='+encodeURIComponent(u.from),{method:'POST'})
+    .then(r=>{if(r.ok){tagQ.unshift(u.name);if(tagDiv[u.name])tagDiv[u.name].hidden=false;showTag();}});
 }
 function stopTag(){tagOn=false;document.getElementById('tagger').style.display='none';}
 document.addEventListener('keydown',e=>{
   if(!tagOn||e.target.tagName==='INPUT')return;
   if(e.key==='Escape'){stopTag();return;}
   if(e.key==='s'){tagQ.shift();showTag();return;}
+  if(e.key==='u'){tagUndoLast();return;}
   if(e.key==='x'){const l=document.getElementById('gallabel').value,n=tagQ.shift();delCap(l,n,tagDiv[n]);showTag();return;}
   const T=tagTargets(document.getElementById('gallabel').value),i=T.findIndex((_,i)=>tagKey(i)===e.key);
   if(i>=0)tagTo(T[i]);
@@ -631,14 +642,14 @@ def _label_dir(label: str):
     return Path(base) / name
 
 
-def list_captures(label: str, limit: int = 80):
-    """Return (newest-first filenames up to ``limit``, total count) for ``label``."""
+def list_captures(label: str, limit: int = 80, offset: int = 0):
+    """Return (newest-first filenames for one page, total count) for ``label``."""
     d = _label_dir(label)
     if d is None or not d.is_dir():
         return [], 0
     files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".jpg"]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return [p.name for p in files[:limit]], len(files)
+    return [p.name for p in files[offset:offset + limit]], len(files)
 
 
 def _capture_file(label: str, name: str):
@@ -710,9 +721,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, "text/plain", snip.encode())
         elif u.path == "/captures":
             label = q.get("label", [_state.get("label", "")])[0]
-            names, total = list_captures(label)
+            offset = max(0, int(q.get("offset", ["0"])[0] or 0))
+            names, total = list_captures(label, 80, offset)
             self._send(200, "application/json",
-                       json.dumps({"label": label, "files": names, "total": total}).encode())
+                       json.dumps({"label": label, "files": names, "total": total, "offset": offset}).encode())
         elif u.path == "/capture_img":
             p = _capture_file(q.get("label", [""])[0], q.get("name", [""])[0])
             if p is not None and p.is_file():
@@ -751,7 +763,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             # or fixing a mis-fed coin). Target must be a configured label.
             p = _capture_file(q.get("label", [""])[0], q.get("name", [""])[0])
             to = q.get("to", [""])[0]
-            dst = _label_dir(to) if to in _labels else None
+            dst = _label_dir(to)
+            if dst is not None and to not in _labels and not dst.is_dir():
+                dst = None  # new folders only for configured labels; undo may target any existing one
             ok = False
             if p is not None and p.is_file() and dst is not None:
                 try:
