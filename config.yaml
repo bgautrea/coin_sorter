@@ -172,10 +172,11 @@ capture:
   blur_ksize: 5
   # Blob area filter as a FRACTION of the ROI area (resolution-independent).
   # A detection only counts as a coin if min <= area/roi_area <= max.
-  # At 1280x720 full-frame ROI one coin is ~0.055 (dime) to ~0.10 (quarter);
-  # two nickels merged are ~0.15, so 0.20 rejects anything bigger than one coin.
+  # At 1280x720 full-frame ROI one coin is ~0.13 (dime) to ~0.38 (half).
+  # At ~22 px/mm a nickel is ~0.18, a quarter ~0.24, a half dollar ~0.38; the
+  # fill/isolation tests (below) are what reject clusters, not max_area.
   min_area_frac: 0.02
-  max_area_frac: 0.20
+  max_area_frac: 0.45
   # Circularity = 4*pi*area / perimeter^2 (1.0 = perfect circle). Rejects belt
   # seams, shadows and debris streaks. Coins are round, so keep this high.
   min_circularity: 0.75

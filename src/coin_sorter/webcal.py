@@ -86,7 +86,7 @@ def default_state(cfg: dict) -> dict:
         "feeder_period_ms": int(capc.get("feeder_period_ms", 2000)),
         "session_active": False, "label": "", "count": 0,
         # live readout (written by the camera thread)
-        "det": False, "area_frac": 0.0, "det_circ": 0.0, "sharp": 0.0,
+        "det": False, "area_frac": 0.0, "det_circ": 0.0, "sharp": 0.0, "meta": {},
     }
 
 
@@ -266,7 +266,8 @@ def _apply_hw(picam, pico, st: dict) -> None:  # type: ignore[no-untyped-def]
                 log.warning("Pico control failed: %s", e)
 
 
-def _draw_overlay(frame, roi_px, det, st: dict, sharp: float = 0.0) -> None:  # type: ignore[no-untyped-def]
+def _draw_overlay(frame, roi_px, det, st: dict, sharp: float = 0.0, meta: dict | None = None) -> None:  # type: ignore[no-untyped-def]
+    meta = meta or {}
     H, W = frame.shape[:2]
     x, y, w, h = roi_px if roi_px else (0, 0, W, H)
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -283,12 +284,14 @@ def _draw_overlay(frame, roi_px, det, st: dict, sharp: float = 0.0) -> None:  # 
         "focus=" + st["focus_mode"] + (f" lens={st['lens']:.2f}" if st["focus_mode"] == "manual" else ""),
         "awb=" + st["awb_mode"] + (f" r={st['red']:.2f} b={st['blue']:.2f}" if st["awb_mode"] == "manual" else ""),
         "exp=" + st["exp_mode"] + (f" {st['exp_us']}us g={st['gain']:.1f}" if st["exp_mode"] == "manual" else ""),
+        (f"sensor: {meta.get('exp_us', 0) / 1000:.1f}ms g={meta.get('gain', 0):.1f} "
+         f"wb={meta.get('red', 0):.2f}/{meta.get('blue', 0):.2f} lux={meta.get('lux', 0):.0f}") if meta else "",
         ("DETECTED" if det.found else "no coin") + f"  area={det.area / area:.3f} circ={det.circularity:.2f} fill={det.fill:.2f}"
         + (f"  sharp={sharp:.0f}" if det.found else ""),
     ]
     if st["session_active"]:
         rows.append(f"REC {st['label']}: {st['count']}")
-    for i, t in enumerate(rows):
+    for i, t in enumerate(t for t in rows if t):
         org = (x + 6, y + 24 + 24 * i)
         cv2.putText(frame, t, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(frame, t, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
@@ -309,6 +312,7 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
         threading.Thread(target=feeder_pulser, args=(pico,), daemon=True).start()
     det_cache: dict = {"key": None, "det": None}
     applied_ver, prev_session = -1, False
+    frame_n, meta = 0, {}
     try:
         while _running[0]:
             now = time.monotonic()
@@ -320,6 +324,17 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                 applied_ver = ver
 
             frame = picam.capture_array()  # BGR (RGB888 config)
+            if frame_n % 10 == 0:
+                # What the sensor actually applied — lets you lock auto's pick.
+                try:
+                    md = picam.capture_metadata()
+                    cg = md.get("ColourGains") or (0.0, 0.0)
+                    meta = {"exp_us": int(md.get("ExposureTime", 0)), "gain": round(float(md.get("AnalogueGain", 0)), 2),
+                            "red": round(float(cg[0]), 2), "blue": round(float(cg[1]), 2),
+                            "lux": round(float(md.get("Lux", 0)), 1)}
+                except Exception:  # pragma: no cover - hardware
+                    meta = {}
+            frame_n += 1
             roi_px = cap.resolve_roi(
                 [st["roi_x"], st["roi_y"], st["roi_w"], st["roi_h"]], W, H
             )
@@ -365,8 +380,9 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                 _state["area_frac"] = det.area / roi_area
                 _state["det_circ"] = det.circularity
                 _state["sharp"] = sharp
+                _state["meta"] = meta
 
-            _draw_overlay(frame, roi_px, det, st, sharp)
+            _draw_overlay(frame, roi_px, det, st, sharp, meta)
             ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if ok:
                 with _frame_lock:
@@ -678,6 +694,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 s = {
                     "detected": _state["det"], "area_frac": round(_state["area_frac"], 4),
                     "circ": round(_state["det_circ"], 3), "sharp": round(_state["sharp"], 1),
+                    "meta": _state["meta"],
                     "session": _state["session_active"],
                     "label": _state["label"], "count": _state["count"], "belt": _state["belt"],
                 }
