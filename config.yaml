@@ -66,21 +66,33 @@ classifier:
   # so heads-up it is ambiguous and only the reverse (or the date) tells.
   # Capture one design per batch, then tag sides in the webcal gallery.
   labels:
+    - dime_barber_obv
+    - dime_barber_rev
     - dime_mercury_obv
     - dime_mercury_rev
     - dime_roosevelt_obv
     - dime_roosevelt_rev
+    - dime_seated_obv
+    - dime_seated_rev
+    - half_franklin_obv
+    - half_franklin_rev
+    - half_walking_obv
+    - half_walking_rev
     - nickel_buffalo_obv
     - nickel_buffalo_rev
     - nickel_jefferson_obv
     - nickel_jefferson_rev
     - nickel_liberty_obv        # "V" nickel
     - nickel_liberty_rev
+    - nickel_shield_obv
+    - nickel_shield_rev
     - penny_indian_obv
     - penny_indian_rev
     - penny_lincoln_obv         # wheat / memorial / shield all share this obverse
     - penny_memorial_rev
     - penny_shield_rev
+    - penny_steel_obv           # 1943 steel cent: grey from either side, so both sides -> keep
+    - penny_steel_rev
     - penny_wheat_rev
     - quarter_standing_obv
     - quarter_standing_rev
@@ -98,14 +110,26 @@ sorter:
   # Labels not listed here go to `check`.
   sort_map:
     keep:
+      - dime_barber_obv
+      - dime_barber_rev
       - dime_mercury_obv
       - dime_mercury_rev
+      - dime_seated_obv
+      - dime_seated_rev
+      - half_franklin_obv
+      - half_franklin_rev
+      - half_walking_obv
+      - half_walking_rev
       - nickel_buffalo_obv
       - nickel_buffalo_rev
       - nickel_liberty_obv
       - nickel_liberty_rev
+      - nickel_shield_obv
+      - nickel_shield_rev
       - penny_indian_obv
       - penny_indian_rev
+      - penny_steel_obv
+      - penny_steel_rev
       - penny_wheat_rev
       - quarter_standing_obv
       - quarter_standing_rev
