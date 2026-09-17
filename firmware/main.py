@@ -37,9 +37,21 @@ for _gpio in (2, 3, 4):
     _reg = PADS_BASE + 0x04 + _gpio * 4
     mem32[_reg] = (mem32[_reg] & ~0x30) | 0x30
 
+# Driver enable bookkeeping. A TB6600 pushes its full DIP-set current through
+# a stationary winding for as long as ENA is asserted, with no back-EMF to
+# limit it -- that is the maximum-dissipation case and it cooked the feeder
+# motor (125C measured) during pauses between bursts. Neither motor needs
+# holding torque here, so the main loop releases ENA after IDLE_DISABLE_MS
+# without motion. Motion commands re-enable on demand.
+IDLE_DISABLE_MS = 1000
+_drv = {"belt": False, "feeder": False}          # ENA asserted?
+_idle_since = {"belt": 0, "feeder": 0}           # ticks_ms of last motion end
+
 def belt_enable(on):
     """Inverted ENA logic for this driver clone."""
     ENA.value(1 if on else 0)
+    _drv["belt"] = bool(on)
+    _idle_since["belt"] = time.ticks_ms()
 
 LED = Pin(25, Pin.OUT, value=0)
 
@@ -116,6 +128,18 @@ for _gpio in (18, 19, 20):
 def feeder_enable(on):
     """Inverted ENA logic for this driver clone (matches the belt)."""
     FENA.value(1 if on else 0)
+    _drv["feeder"] = bool(on)
+    _idle_since["feeder"] = time.ticks_ms()
+
+def idle_disable():
+    """Release a driver that has sat enabled but motionless for IDLE_DISABLE_MS."""
+    now = time.ticks_ms()
+    if _drv["belt"] and not state["running"] and not state["busy"] \
+            and time.ticks_diff(now, _idle_since["belt"]) > IDLE_DISABLE_MS:
+        belt_enable(False)
+    if _drv["feeder"] and not state["feeder_running"] and not state["busy"] \
+            and time.ticks_diff(now, _idle_since["feeder"]) > IDLE_DISABLE_MS:
+        feeder_enable(False)
 
 feeder_gen = StepGen(1, 18)
 
@@ -202,6 +226,7 @@ def belt_move(steps):
         state["belt_position"] += 1 if direction else -1
     state["busy"] = False
     LED.off()
+    _idle_since["belt"] = time.ticks_ms()
 
 def belt_run(hz):
     """Start non-blocking continuous belt motion. hz>0 forward, hz<0 reverse.
@@ -229,6 +254,7 @@ def belt_run(hz):
 def belt_stop():
     """Halt continuous belt motion (no-op if not running). Leaves PUL idle."""
     belt_gen.stop()
+    _idle_since["belt"] = time.ticks_ms()
     if state["running"]:
         state["running"] = False
         state["busy"] = False
@@ -251,6 +277,7 @@ def feeder_move(steps):
         FPUL.value(1); time.sleep_us(half_us)
         state["feeder_position"] += 1 if direction else -1
     state["busy"] = False
+    _idle_since["feeder"] = time.ticks_ms()
 
 def feeder_run(hz):
     """Start non-blocking continuous feeder motion. hz>0 fwd, hz<0 rev.
@@ -274,6 +301,7 @@ def feeder_run(hz):
 def feeder_stop():
     """Halt continuous feeder motion (no-op if not running). Leaves FPUL idle."""
     feeder_gen.stop()
+    _idle_since["feeder"] = time.ticks_ms()
     if state["feeder_running"]:
         state["feeder_running"] = False
 
@@ -388,7 +416,7 @@ def handle(line):
             if DIVERTER_ENABLED:    features += ",diverter"
             if HOME_SWITCH_ENABLED: features += ",home_sw"
             if COIN_SENSOR_ENABLED: features += ",coin_sensor"
-            print(f"STATUS busy={state['busy']} running={state['running']} belt={state['belt_position']} feeder={state['feeder_position']} feeder_running={state['feeder_running']} div={state['div_position']} homed={state['homed']} speed={state['speed_hz']} feeder_speed={state['feeder_speed_hz']} coin={coin_present()} features={features}")
+            print(f"STATUS busy={state['busy']} running={state['running']} belt={state['belt_position']} feeder={state['feeder_position']} feeder_running={state['feeder_running']} div={state['div_position']} homed={state['homed']} speed={state['speed_hz']} feeder_speed={state['feeder_speed_hz']} belt_ena={_drv['belt']} feeder_ena={_drv['feeder']} coin={coin_present()} features={features}")
         elif cmd == "BINS":
             print("OK " + ",".join(f"{k}={v}" for k, v in BIN_POSITIONS.items()))
         # Belt
@@ -462,6 +490,7 @@ poller.register(sys.stdin, select.POLLIN)
 print("READY")
 buf = ""
 while True:
+    idle_disable()
     if poller.poll(10):
         ch = sys.stdin.read(1)
         if ch == "\n":
