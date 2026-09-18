@@ -1,0 +1,24 @@
+# Web calibration + capture UI for the coin sorter (user unit).
+#
+# Install:  cp deploy/coin-webcal.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload
+#           systemctl --user enable --now coin-webcal
+#           sudo loginctl enable-linger $USER   # keep it running when not logged in
+# Use:      systemctl --user restart coin-webcal     (after config/label changes)
+#           journalctl --user -u coin-webcal -f       (logs)
+# Note: webcal owns the camera and the Pico serial port -- stop it before the
+# CLI capture/calibrate tools or before flashing the Pico:
+#           systemctl --user stop coin-webcal
+[Unit]
+Description=Coin sorter web calibration/capture UI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/coin_sorter
+ExecStart=%h/coin_sorter/.venv/bin/python -m coin_sorter.webcal
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

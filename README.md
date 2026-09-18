@@ -120,8 +120,13 @@ training time, applied uniformly to every class.
 
 ### Web UI
 
+On the rig it runs as a user systemd service (`deploy/coin-webcal.service`):
+
 ```bash
-python -m coin_sorter.webcal        # then open http://<pi-ip>:8080/
+systemctl --user restart coin-webcal      # after config.yaml / label changes
+systemctl --user stop coin-webcal         # before CLI capture or flashing the Pico
+journalctl --user -u coin-webcal -f       # logs
+python -m coin_sorter.webcal              # or run it by hand; http://<pi-ip>:8080/
 ```
 
 Live preview with the detection overlay (`area`, `circ`, `fill`, and `sharp` —
