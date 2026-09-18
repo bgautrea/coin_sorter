@@ -46,6 +46,10 @@ _ctrl_ver = [0]  # bumped when a hardware control (focus/wb/ring/belt) changes
 _state: dict = {}
 _capc: dict = {}  # config['capture'] — gate keys with no slider pass through as-is
 _labels: list = []  # config['classifier']['labels'] — tag targets in the gallery
+# Camera recipe from config (config.local.yaml on the rig). The "Recipe" button
+# restores it after someone presses an Auto button or nudges a slider.
+_RECIPE_KEYS = ("focus_mode", "lens", "awb_mode", "red", "blue", "exp_mode", "exp_us", "gain")
+_recipe: dict = {}
 _pico_lock = threading.Lock()  # camera thread and feeder pulser share the Pico
 _raw_dir = [None]  # base directory for captured crops; set in main()
 
@@ -101,6 +105,9 @@ def apply_setting(state: dict, key: str, val: str) -> bool:
     changed, so the caller can bump the controls version.
     """
     try:
+        if key == "preset":
+            state.update(_recipe)
+            return True
         if key == "focus_mode":
             state["focus_mode"] = "manual" if val == "manual" else "continuous"
             return True
@@ -421,7 +428,8 @@ button.active{background:#0a6}
 h3{margin:6px 0;font-size:14px;color:#8cf;border-bottom:1px solid #333}
 #stat{font-family:monospace;font-size:13px;color:#9f9}
 pre{background:#000;padding:8px;border-radius:4px;white-space:pre-wrap;font-size:12px}
-input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padding:5px;border-radius:4px;width:120px}
+input#label{background:#222;color:#eee;border:1px solid #555;padding:5px;border-radius:4px;width:120px}
+select#gallabel{background:#222;color:#eee;border:1px solid #555;padding:5px;border-radius:4px;max-width:230px}
 .gallery{display:flex;flex-wrap:wrap;gap:6px;max-height:460px;overflow:auto;margin-top:8px}
 #tagger{display:none;margin-top:8px;padding:8px;border:1px solid #444;border-radius:6px;background:#181818}
 #tagimg{width:320px;height:320px;object-fit:contain;background:#000;border-radius:4px;display:block}
@@ -438,6 +446,9 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
 <div class=wrap>
 <div><img src="/stream.mjpg"><div id=stat>…</div></div>
 <div class=panel>
+<h3>Camera</h3>
+<div class=row><button id=recipe onclick="applyRecipe()" style="background:#2a5">Recipe</button>
+ <span style="font-size:12px;color:#999">restore the calibrated focus / WB / exposure from config</span></div>
 <h3>Focus</h3>
 <div class=row><button id=afauto onclick="set('focus_mode','continuous')">Auto</button>
  <label>lens</label><input id=lens type=range min=0 max=15 step=0.05 oninput="sl('lens',this.value)">
@@ -485,8 +496,8 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
 <div class=panel style="min-width:340px">
 <h3>Captures</h3>
 <div class=row>
- <input id=gallabel placeholder="label e.g. penny">
- <button onclick="loadCaptures()">Refresh</button>
+ <select id=gallabel onchange="galOffset=0;loadCaptures()"></select>
+ <button onclick="loadFolders().then(loadCaptures)">Refresh</button>
  <button onclick="galPage(-1)">&lsaquo; Prev</button>
  <button onclick="galPage(1)">Next &rsaquo;</button>
  <span id=galcount style="font-size:12px;color:#9cf"></span>
@@ -511,6 +522,7 @@ input#label,input#gallabel{background:#222;color:#eee;border:1px solid #555;padd
 let belt=false, rec=false, dir=1, feeder=false, feederDir=1;
 function set(k,v){fetch('/set?'+k+'='+encodeURIComponent(v));syncManual(k);}
 function sl(k,v){document.getElementById(k+'v').textContent=(+v).toFixed(2);set(k,v);}
+function applyRecipe(){fetch('/set?preset=1').then(()=>fetch('/state').then(r=>r.json()).then(init));}
 function syncManual(k){
   if(k==='lens')document.getElementById('afauto').classList.remove('active');
   if(k==='focus_mode')document.getElementById('afauto').classList.add('active');
@@ -531,13 +543,23 @@ function toggleRec(){rec=!rec;const b=document.getElementById('recbtn');
   if(rec){const l=document.getElementById('label').value||'coin';
     fetch('/capture?action=start&label='+encodeURIComponent(l));b.textContent='Stop';b.classList.add('active');}
   else{fetch('/capture?action=stop');b.textContent='Start';b.classList.remove('active');
-    document.getElementById('gallabel').value=document.getElementById('label').value||'coin';loadCaptures();}}
+    galOffset=0;loadFolders().then(()=>{const g=document.getElementById('gallabel'),l=document.getElementById('label').value;
+      if([...g.options].some(o=>o.value===l))g.value=l;loadCaptures();});}}
 function showCfg(){fetch('/config').then(r=>r.text()).then(t=>document.getElementById('cfg').textContent=t);}
 let galOffset=0;
+function loadFolders(){
+  const sel=document.getElementById('gallabel'),cur=sel.value;
+  return fetch('/folders').then(r=>r.json()).then(d=>{
+    sel.innerHTML='';
+    const on=new Set(d.folders.map(f=>f.name));
+    for(const f of d.folders){const o=document.createElement('option');o.value=f.name;o.textContent=f.name+' ('+f.count+')';sel.appendChild(o);}
+    for(const l of d.labels){if(on.has(l))continue;const o=document.createElement('option');o.value=l;o.textContent=l+' (empty)';sel.appendChild(o);}
+    if(cur&&[...sel.options].some(o=>o.value===cur))sel.value=cur;
+  });
+}
 function galPage(dir){galOffset=Math.max(0,galOffset+dir*80);loadCaptures();}
 function loadCaptures(){
-  const l=document.getElementById('gallabel').value||document.getElementById('label').value||'coin';
-  document.getElementById('gallabel').value=l;
+  const l=document.getElementById('gallabel').value;if(!l)return;
   fetch('/captures?label='+encodeURIComponent(l)+'&offset='+galOffset).then(r=>r.json()).then(d=>{
     if(d.offset>0&&!d.files.length){galOffset=Math.max(0,galOffset-80);loadCaptures();return;}
     document.getElementById('galcount').textContent=d.files.length?
@@ -586,7 +608,7 @@ function tagUndoLast(){
   fetch('/capture_move?label='+encodeURIComponent(u.to)+'&name='+encodeURIComponent(u.name)+'&to='+encodeURIComponent(u.from),{method:'POST'})
     .then(r=>{if(r.ok){tagQ.unshift(u.name);if(tagDiv[u.name])tagDiv[u.name].hidden=false;showTag();}});
 }
-function stopTag(){tagOn=false;document.getElementById('tagger').style.display='none';}
+function stopTag(){tagOn=false;document.getElementById('tagger').style.display='none';loadFolders();}
 document.addEventListener('keydown',e=>{
   if(!tagOn||e.target.tagName==='INPUT')return;
   if(e.key==='Escape'){stopTag();return;}
@@ -610,8 +632,8 @@ function init(s){LABELS=s.labels||[];for(const k of ['lens','red','blue','exp','
     b.textContent=dir>0?'Fwd':'Rev';b.classList.toggle('active',dir<0);}
   if(s.feeder_dir!==undefined){feederDir=s.feeder_dir;const b=document.getElementById('feeddirbtn');
     b.textContent=feederDir>0?'Fwd':'Rev';b.classList.toggle('active',feederDir<0);}
-  if(s.label)document.getElementById('gallabel').value=s.label;
-  loadCaptures();}
+  loadFolders().then(()=>{const g=document.getElementById('gallabel');
+    if(s.label&&[...g.options].some(o=>o.value===s.label))g.value=s.label;loadCaptures();});}
 fetch('/state').then(r=>r.json()).then(init);
 setInterval(()=>{fetch('/status').then(r=>r.json()).then(s=>{
   document.getElementById('stat').textContent=(s.detected?'● COIN':'○ none')+
@@ -719,6 +741,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             with _lock:
                 snip = config_snippet(_state)
             self._send(200, "text/plain", snip.encode())
+        elif u.path == "/folders":
+            base = _raw_dir[0]
+            out = []
+            if base is not None and base.is_dir():
+                for d in sorted(base.iterdir()):
+                    if d.is_dir() and not d.name.startswith(("_", ".")):
+                        out.append({"name": d.name, "count": sum(1 for p in d.iterdir() if p.suffix.lower() == ".jpg")})
+            self._send(200, "application/json", json.dumps({"folders": out, "labels": list(_labels)}).encode())
         elif u.path == "/captures":
             label = q.get("label", [_state.get("label", "")])[0]
             offset = max(0, int(q.get("offset", ["0"])[0] or 0))
@@ -809,6 +839,7 @@ def main(argv: list[str] | None = None) -> int:
     global _state
     _state = default_state(cfg)
     _capc.update(cfg.get("capture") or {})
+    _recipe.update({k: _state[k] for k in _RECIPE_KEYS})
     _labels.extend((cfg.get("classifier") or {}).get("labels") or [])
 
     cam = threading.Thread(target=camera_thread, args=(cfg, raw_dir), daemon=True)
