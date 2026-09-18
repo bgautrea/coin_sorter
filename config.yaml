@@ -93,6 +93,7 @@ classifier:
     - penny_shield_rev
     - penny_steel_obv           # 1943 steel cent: grey from either side, so both sides -> keep
     - penny_steel_rev
+    - penny_wheat_obv
     - penny_wheat_rev
     - quarter_standing_obv
     - quarter_standing_rev
@@ -130,6 +131,7 @@ sorter:
       - penny_indian_rev
       - penny_steel_obv
       - penny_steel_rev
+      - penny_wheat_obv         # experiment: same design as penny_lincoln_obv, differs only by date
       - penny_wheat_rev
       - quarter_standing_obv
       - quarter_standing_rev
