@@ -1,8 +1,8 @@
 # Coin sorter HAT+ — rev 0 sketch
 
 KiCad 8 starting point for a Pi 5 HAT+ that carries the whole motion side of the
-sorter: 12 V in, buck to 5 V for the Pi, a Raspberry Pi Pico, three TMC2209
-StepStick sockets, switched 12 V outputs, and the small stuff (LED ring level
+sorter: 12 V in, buck to 5 V for the Pi, a Raspberry Pi Pico, three StepStick
+sockets (TMC2209 or A4988, selected by solder jumpers), switched 12 V outputs, and the small stuff (LED ring level
 shifter, home switches, coin sensor, HAT+ ID EEPROM). It stands off the Pi on
 the 40-pin header only; 33.5 mm of the board overhangs past the Pi's header edge
 so the drivers, jack and buck sit over nothing.
@@ -53,6 +53,11 @@ if USB peripherals need more than 600 mA. Size F1 to the real load (Pi 5 up to
 
 - TMC2209 breakout pin order (the 16-pin socket varies between makers; DIAG /
   INDEX are often extra pins outside it).
+- Solder jumpers per driver socket (JPx1–JPx4) match the driver you fit:
+  **TMC2209** — JPx3=A (UART on pin 4), JPx4=A (CLK→GND), JPx1/JPx2 = UART
+  address (belt 00, feeder 10, diverter 01). **A4988** — JPx3=B (MS3 high),
+  JPx4=B (RESET tied to SLEEP), JPx1+JPx2 closed = 1/16 step; set Vref =
+  I × 8 × Rsense (0.40 V for 0.5 A with R100 sense resistors); heatsink.
 - Buck module pin order — U5 is drawn as a generic 5-pin header.
 - Header and hole positions against the official HAT+ mechanical drawing. The
   socket goes on the **bottom** side; pin 1 is drawn at (7.1, 39.54) in board
