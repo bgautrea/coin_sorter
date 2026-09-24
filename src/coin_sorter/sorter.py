@@ -15,8 +15,13 @@ Pipeline:
            train/serve mismatch.
         d. Run the ONNX classifier on that crop.
         e. Map the label to a physical bin via ``sorter.sort_map`` (unknown
-           labels and low confidence -> ``check``) and send ``SORT <bin>``.
-        f. Cool down for ``sorter.cooldown_ms`` so we do not double-sort.
+           labels and low confidence -> ``check``) and SCHEDULE the divert for
+           when the coin actually reaches the nose, ``sorter.transport_delay_s``
+           later. The camera sits far upstream of the diverter -- ~240 mm, some
+           30 s of belt at 550 Hz -- so a dozen or more coins are in flight at
+           once. Aiming the dish on detection would put every coin in whichever
+           bin the newest coin upstream asked for.
+        f. Drain due diverts from that queue each iteration.
 
 The stub classifier (when no ONNX model is present) lets us exercise the
 camera + serial path end-to-end before training is done.
@@ -28,6 +33,7 @@ import argparse
 import logging
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 from . import configure_logging, load_config
@@ -72,6 +78,49 @@ def _open_camera(
     return picam
 
 
+class DivertQueue:
+    """Coins in flight between the camera's trip line and the roller nose.
+
+    The classifier decides ~240 mm upstream of the diverter, which at ~7.9 mm/s
+    is about 30 s of belt -- so a dozen or more coins are travelling at any
+    moment. Aiming the dish when a coin is *classified* would put every coin in
+    whichever bin the newest coin upstream asked for. Instead each decision is
+    scheduled for the coin's own arrival.
+
+    A coin whose window has passed by more than ``hold_s`` is reported missed
+    rather than diverted late: by then it has already tipped off the nose, and
+    aiming the dish for it would only mis-sort whichever coin is there now.
+    """
+
+    def __init__(self, delay_s: float, hold_s: float) -> None:
+        self.delay_s = float(delay_s)
+        self.hold_s = float(hold_s)
+        self._q: deque[tuple[float, str, str]] = deque()
+
+    def __len__(self) -> int:
+        return len(self._q)
+
+    def schedule(self, bin_: str, label: str, now: float) -> float:
+        """Queue a divert for a coin detected at `now`. Returns its due time."""
+        due = now + self.delay_s
+        self._q.append((due, bin_, label))
+        return due
+
+    def due(self, now: float) -> list[tuple[str, str, float, bool]]:
+        """Pop everything whose time has come.
+
+        Returns (bin, label, lateness, missed) per coin, oldest first. FIFO is
+        correct here without sorting: the belt cannot reorder coins, so
+        detection order is arrival order.
+        """
+        out = []
+        while self._q and self._q[0][0] <= now:
+            due_at, bin_, label = self._q.popleft()
+            late = now - due_at
+            out.append((bin_, label, late, late > self.hold_s))
+        return out
+
+
 def run(
     cfg: dict,
     max_iters: int | None = None,
@@ -79,6 +128,8 @@ def run(
     force_bin: str | None = None,
     no_sort: bool = False,
     save_crops: Path | None = None,
+    transport_delay_s: float | None = None,
+    measure_transport: bool = False,
 ) -> None:
     """Run the main loop.
 
@@ -87,6 +138,9 @@ def run(
         force_bin   ignore the classifier and always sort here, for timing runs
         no_sort     gate, crop and classify but never command the diverter
         save_crops  write every crop the classifier saw, named with its verdict
+        transport_delay_s  override sorter.transport_delay_s
+        measure_transport  log detections with a wall clock and queue nothing,
+                    so you can time a single coin from trip line to nose
     """
     serial_cfg = cfg["serial"]
     sorter_cfg = cfg["sorter"]
@@ -99,6 +153,10 @@ def run(
     }
     cooldown_s = float(sorter_cfg["cooldown_ms"]) / 1000.0
     target_period_s = 1.0 / float(sorter_cfg["inference_fps"])
+    if transport_delay_s is None:
+        transport_delay_s = float(sorter_cfg.get("transport_delay_s", 0.0))
+    hold_s = float(sorter_cfg.get("divert_hold_s", 0.5))
+    queue = DivertQueue(transport_delay_s, hold_s)
 
     # Presence gate + tight crop, reusing the capture path so the frames the
     # model sees at run time are framed exactly like the ones it trained on.
@@ -114,7 +172,7 @@ def run(
     deduper = Deduper("centroid_band", cap_params, roi_w, roi_h)
     pad_frac = float(cap_params.get("crop_pad_frac", 0.25))
     crop_square = bool(cap_params.get("crop_square", True))
-    gated = classified = 0
+    gated = classified = missed = 0
     latencies: list[float] = []
     if save_crops:
         save_crops.mkdir(parents=True, exist_ok=True)
@@ -188,26 +246,52 @@ def run(
 
                             name = f"{int(t_trip * 1000)}_{label}_{conf:.2f}_{bin_}.jpg"
                             cv2.imwrite(str(save_crops / name), crop)
-                        if no_sort:
+                        if measure_transport:
                             log.info(
-                                "predict=%s conf=%.3f -> %s (NOT sent) "
+                                "TRIPPED at %s  predict=%s conf=%.3f -> %s. "
+                                "Time it to the nose; that is transport_delay_s.",
+                                time.strftime("%H:%M:%S"), label, conf, bin_,
+                            )
+                        elif no_sort:
+                            log.info(
+                                "predict=%s conf=%.3f -> %s (NOT sent, due in %.1fs) "
                                 "infer=%.0fms centroid=%s fill=%.2f",
-                                label, conf, bin_, t_infer * 1000, det.centroid, det.fill,
+                                label, conf, bin_, transport_delay_s,
+                                t_infer * 1000, det.centroid, det.fill,
                             )
                         else:
-                            try:
-                                pico.sort(bin_)
-                                total = time.monotonic() - t_trip
-                                latencies.append(total)
-                                log.info(
-                                    "predict=%s conf=%.3f -> %s  "
-                                    "infer=%.0fms trip->aimed=%.0fms centroid=%s fill=%.2f",
-                                    label, conf, bin_, t_infer * 1000, total * 1000,
-                                    det.centroid, det.fill,
-                                )
-                                time.sleep(cooldown_s)
-                            except PicoError as e:
-                                log.error("SORT %s (%s) failed: %s", bin_, label, e)
+                            # Schedule, do not aim: the coin is ~transport_delay_s
+                            # away from the nose and other coins are ahead of it.
+                            queue.schedule(bin_, label, t_trip)
+                            log.info(
+                                "predict=%s conf=%.3f -> %s queued (due in %.1fs, "
+                                "%d in flight) infer=%.0fms fill=%.2f",
+                                label, conf, bin_, transport_delay_s, len(queue),
+                                t_infer * 1000, det.fill,
+                            )
+                        time.sleep(cooldown_s)
+
+                # Drain any coin that has now reached the nose. Checked every
+                # iteration, not only on detection, because the belt keeps
+                # delivering long after the last coin was classified.
+                for bin_, label, late, was_missed in queue.due(time.monotonic()):
+                    if was_missed:
+                        log.warning(
+                            "MISSED %s (%s): due %.1fs ago, dish not aimed in time",
+                            label, bin_, late,
+                        )
+                        missed += 1
+                        continue
+                    try:
+                        pico.sort(bin_)
+                        latencies.append(transport_delay_s + late)
+                        log.info(
+                            "divert -> %s for %s (%.2fs late, %d still in flight)",
+                            bin_, label, late, len(queue),
+                        )
+                        time.sleep(hold_s)
+                    except PicoError as e:
+                        log.error("SORT %s (%s) failed: %s", bin_, label, e)
 
                 # Pace the loop to roughly inference_fps.
                 elapsed = time.monotonic() - t0
@@ -226,12 +310,23 @@ def run(
         if latencies:
             latencies.sort()
             log.info(
-                "trip->aimed latency: min %.0f ms, median %.0f ms, max %.0f ms. "
-                "The dish must reach its bin before the coin reaches the nose; "
-                "compare against (trip-line -> nose distance) / belt speed.",
-                latencies[0] * 1000,
-                latencies[len(latencies) // 2] * 1000,
-                latencies[-1] * 1000,
+                "scheduled->diverted: min %.1fs median %.1fs max %.1fs "
+                "(target transport_delay_s=%.1fs)",
+                latencies[0], latencies[len(latencies) // 2], latencies[-1],
+                transport_delay_s,
+            )
+        if len(queue):
+            log.warning(
+                "%d coin(s) still in flight at shutdown -- they will land in "
+                "whatever bin the dish was last set to. Let the belt run "
+                "transport_delay_s (%.0fs) longer than the last coin.",
+                len(queue), transport_delay_s,
+            )
+        if missed:
+            log.warning(
+                "%d coin(s) missed their divert window (>%.1fs late). If this is "
+                "not zero, the loop is stalling -- lower inference_fps work or "
+                "raise divert_hold_s.", missed, hold_s,
             )
         if belt_hz:
             try:
@@ -260,6 +355,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Gate, crop and classify, but never command the diverter.")
     p.add_argument("--save-crops", type=Path, default=None,
                    help="Write every crop the classifier saw, named with its verdict.")
+    p.add_argument("--transport-delay", type=float, default=None,
+                   help="Seconds from the trip line to the nose. Overrides "
+                        "sorter.transport_delay_s. Measure it, do not compute it.")
+    p.add_argument("--measure-transport", action="store_true",
+                   help="Log each detection with a wall clock and queue nothing, "
+                        "so you can time one coin from trip line to nose.")
     return p.parse_args(argv)
 
 
@@ -275,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
         force_bin=args.force_bin,
         no_sort=args.no_sort,
         save_crops=args.save_crops,
+        transport_delay_s=args.transport_delay,
+        measure_transport=args.measure_transport,
     )
     return 0
 

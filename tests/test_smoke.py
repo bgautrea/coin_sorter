@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from coin_sorter import load_config
 from coin_sorter.capture import (
@@ -200,3 +201,62 @@ def test_webcal_config_snippet_round_trips_yaml() -> None:
     assert parsed["camera"]["exposure_us"] == 1500
     assert parsed["camera"]["analogue_gain"] == 3.0
     assert parsed["capture"]["min_area_frac"] == 0.03
+
+
+# --------------------------------------------------------------------------- #
+# DivertQueue — the camera decides ~30 s upstream of the diverter, so the
+# scheduling has to be right for a dozen coins in flight at once. None of this
+# is observable on the rig without mis-sorting real coins, so test it here.
+# --------------------------------------------------------------------------- #
+def _queue(delay=30.0, hold=0.5):
+    from coin_sorter.sorter import DivertQueue
+
+    return DivertQueue(delay_s=delay, hold_s=hold)
+
+
+def test_divert_is_not_due_until_the_coin_arrives():
+    q = _queue()
+    q.schedule("keep", "penny", now=100.0)
+    assert q.due(now=100.0) == []
+    assert q.due(now=129.9) == []
+    assert len(q) == 1
+    (bin_, label, late, missed), = q.due(now=130.0)
+    assert (bin_, label, missed) == ("keep", "penny", False)
+    assert late == 0.0
+    assert len(q) == 0
+
+
+def test_many_coins_in_flight_keep_their_own_bins():
+    """The failure this class exists to prevent: 15 coins between the camera
+    and the nose, each landing in whichever bin the newest coin asked for."""
+    q = _queue()
+    bins = ["keep", "common", "check"] * 5
+    for i, b in enumerate(bins):
+        q.schedule(b, f"coin{i}", now=100.0 + 2.0 * i)
+    assert len(q) == 15
+    assert q.due(now=125.0) == []          # none has arrived yet
+    # Each becomes due 30 s after its own detection, in detection order.
+    seen = []
+    for i in range(len(bins)):
+        for bin_, label, _late, missed in q.due(now=130.0 + 2.0 * i):
+            assert not missed
+            seen.append((bin_, label))
+    assert seen == [(b, f"coin{i}") for i, b in enumerate(bins)]
+
+
+def test_coin_past_its_window_is_reported_missed_not_diverted_late():
+    """A late divert is worse than none: the coin has already tipped off, so
+    aiming for it would mis-sort whichever coin is under the nose now."""
+    q = _queue(hold=0.5)
+    q.schedule("keep", "penny", now=100.0)
+    (bin_, label, late, missed), = q.due(now=131.0)   # 1.0 s past, hold 0.5 s
+    assert missed is True
+    assert late == pytest.approx(1.0)
+
+
+def test_within_hold_window_still_diverts():
+    q = _queue(hold=0.5)
+    q.schedule("keep", "penny", now=100.0)
+    (_bin, _label, late, missed), = q.due(now=130.4)
+    assert missed is False
+    assert late == pytest.approx(0.4)

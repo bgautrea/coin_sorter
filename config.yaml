@@ -154,6 +154,22 @@ sorter:
   # Cooldown after sending a SORT command, so we do not double-classify
   # the same coin.
   cooldown_ms: 250
+  # Seconds a coin takes to travel from the camera's trip line to the roller
+  # nose, where it tips onto the dish. The classifier decides far upstream of
+  # the diverter, so the divert must be SCHEDULED for the coin's arrival, not
+  # sent immediately -- at ~240 mm and ~7.9 mm/s that is ~30 s, and roughly 15
+  # coins are in flight at once. Aiming on detection would mean every coin
+  # landed in whichever bin the newest coin upstream called for.
+  #
+  # MEASURE this, do not compute it. Over 30 s a 5% error in belt speed is a
+  # 1.5 s timing error, and 550 Hz -> 7.9 mm/s is approximate and slips. Drop
+  # one coin, note the detection timestamp in the log, and time it to the nose:
+  #   python -m coin_sorter.sorter --belt-hz 550 --no-sort --measure-transport
+  transport_delay_s: 30.0
+  # How long the dish holds a bin before the next scheduled divert may move it.
+  # Must exceed the servo settle (SERVO_SETTLE_MS in firmware, 300 ms) plus the
+  # coin's fall; it bounds how closely spaced arrivals can be.
+  divert_hold_s: 0.5
 
 capture:
   # Belt-fed training-data capture (used by coin_sorter.capture). The belt runs
