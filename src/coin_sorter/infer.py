@@ -114,7 +114,7 @@ class CoinClassifier:
         logits = outputs[0]
         if logits.ndim > 1:
             logits = logits[0]
-        probs = _softmax(logits)
+        probs = _as_probabilities(logits)
         idx = int(np.argmax(probs))
         conf = float(probs[idx])
         label = self.labels[idx] if idx < len(self.labels) else f"class_{idx}"
@@ -132,6 +132,23 @@ class CoinClassifier:
             mean=m.get("mean", (0.0, 0.0, 0.0)),
             std=m.get("std", (1.0, 1.0, 1.0)),
         )
+
+
+def _as_probabilities(x: np.ndarray) -> np.ndarray:
+    """Return a probability vector, applying softmax only if it is needed.
+
+    Ultralytics YOLO-cls ONNX exports already end in a softmax, so the head
+    emits probabilities, not logits. Running softmax over them again squashes
+    the range: a fully confident 4-class prediction [1, 0, 0, 0] comes out as
+    0.475, which sits below any sensible confidence threshold and sends every
+    single coin to the `check` bin -- looking exactly like a bad model.
+
+    Other export pipelines do emit raw logits, so detect rather than assume:
+    a non-negative vector summing to 1 is already a distribution.
+    """
+    if x.size and x.min() >= 0.0 and abs(float(x.sum()) - 1.0) < 1e-3:
+        return x
+    return _softmax(x)
 
 
 def _softmax(x: np.ndarray) -> np.ndarray:
