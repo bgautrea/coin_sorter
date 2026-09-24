@@ -29,6 +29,7 @@ def train(
     name: str,
     patience: int,
     resume: bool,
+    workers: int | None = None,
 ) -> Path:
     """Train a YOLO classifier and export to ONNX.
 
@@ -56,6 +57,7 @@ def train(
         patience=patience,
         resume=resume,
         plots=True,
+        **({} if workers is None else {"workers": workers}),
     )
 
     log.info("Exporting to ONNX (imgsz=%d, dynamic=False, opset=17)", imgsz)
@@ -72,6 +74,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch", type=int, default=None, help="Override training.batch.")
     p.add_argument("--imgsz", type=int, default=None, help="Override training.imgsz.")
     p.add_argument("--resume", action="store_true", help="Resume from last checkpoint.")
+    p.add_argument("--workers", type=int, default=None,
+                   help="Dataloader workers. Lower it on shared-memory boards "
+                        "like Jetson, where each worker competes with the GPU.")
     p.add_argument(
         "--data",
         default=None,
@@ -98,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         name=tcfg["name"],
         patience=int(tcfg.get("patience", 15)),
         resume=args.resume,
+        workers=args.workers,
     )
     log.info("ONNX written to %s", onnx_path)
     return 0

@@ -1,0 +1,48 @@
+# Training image for the Jetson Orin Nano (JetPack 6.x / L4T r36).
+#
+# FROM an l4t-pytorch image because torch cannot be pip-installed on a Jetson:
+# PyPI wheels are x86 or CPU-only, and ultralytics will silently pull one if it
+# does not find a working torch, leaving you training at a few percent of speed
+# with no error. NVIDIA's aarch64+CUDA build lives in this base image.
+ARG BASE=dustynv/l4t-pytorch:r36.4.0
+FROM ${BASE}
+
+# The base image pins PIP_INDEX_URL to jetson.webredirect.org, the old
+# jetson-ai-lab mirror, which no longer resolves -- so every install fails with
+# "Name or service not known" and never consults PyPI. The env var beats every
+# pip.conf, so it has to be overridden per-RUN.
+ENV PIP_INDEX_URL=https://pypi.org/simple \
+    PIP_TRUSTED_HOST=pypi.org
+
+# --no-deps on purpose. This image ships torch 2.4.0, a Jetson-built
+# torchvision 0.19.0a0 and opencv-contrib-python; letting pip resolve
+# ultralytics' dependency tree would "upgrade" those to CPU-only PyPI builds or
+# install opencv-python alongside opencv-contrib.
+#
+# numpy is pinned by constraint: opencv, torch and torchvision here are all
+# compiled against the numpy 1.26 ABI, and anything that drags in numpy 2.x
+# makes every cv2 import die with "numpy.core.multiarray failed to import".
+#
+# The deps themselves come from ultralytics' own metadata rather than a
+# hand-written list -- hand-listing missed polars, which only surfaces when
+# ultralytics saves its first checkpoint, i.e. after a full epoch of training.
+#
+# ultralytics is capped below 8.4: that line depends on ultralytics-platform,
+# which requires Python >= 3.11, and this l4t image ships Python 3.10. 8.3.x
+# has full YOLO11 support and is the newest line that installs here.
+COPY install_ultralytics_deps.py /tmp/install_ultralytics_deps.py
+RUN echo "numpy==1.26.4" > /tmp/constraints.txt && \
+    pip install --no-cache-dir --no-deps 'ultralytics>=8.3,<8.4' ultralytics-thop && \
+    python3 /tmp/install_ultralytics_deps.py && \
+    pip install --no-cache-dir -c /tmp/constraints.txt onnxslim
+
+# Pre-fetch the classifier weights so a training run needs no network at all.
+# Ultralytics resolves a bare name against the working directory, so the run
+# step copies this in if it is missing.
+RUN mkdir -p /opt/weights && cd /opt/weights && \
+    python3 -c "from ultralytics import YOLO; YOLO('yolo11n-cls.pt')" && \
+    ls -la /opt/weights
+
+# Fail at build time, not an epoch into a training run.
+COPY verify_image.py /tmp/verify_image.py
+RUN python3 /tmp/verify_image.py
