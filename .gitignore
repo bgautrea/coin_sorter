@@ -27,6 +27,10 @@ models/*
 !data/processed/.gitkeep
 !models/.gitkeep
 
+# Dataset bundle built by scripts/zip_dataset.sh for upload to Drive.
+data.zip
+*.zip
+
 # Notebook scratch
 .ipynb_checkpoints/
 

@@ -251,6 +251,49 @@ capture:
 dataset:
   raw_dir: data/raw
   processed_dir: data/processed
+  # Training "views". data/raw is the permanent source of truth and keeps the
+  # finest labels you ever made; a view projects it into the class set you want
+  # to TRAIN, without moving a single file. Build one with:
+  #     python scripts/build_trainset.py --view <name>
+  # Rules are ordered, first match wins, fnmatch globs against the raw folder
+  # name. A null target excludes those images from that view.
+  views:
+    # v0: denomination only. Trains on ALL captures including the side-less
+    # nickel/ dime/ penny/ folders - proves the whole loop with data in hand.
+    denomination:
+      rules:
+        # Genuine gate failures (see scripts/triage_quarantine.py): clusters,
+        # coins cut off at the crop edge, overlaps. NOT _triage/clean, which is
+        # the nickel_bluewb set - correctly framed but shot under the wrong
+        # white balance, and colour is the copper/silver cue.
+        - ["_triage/cluster", "reject"]
+        - ["_triage/partial", "reject"]
+        - ["_triage/overlap", "reject"]
+        - ["quarter*", "quarter"]
+        - ["nickel*",  "nickel"]
+        - ["dime*",    "dime"]
+        - ["penny*",   "penny"]
+        - ["half*",    "half"]
+        - ["reject*",  "reject"]
+        - ["*",        null]
+    # v1: fine-grained, but only the classes with enough samples to learn.
+    # Everything else stays in data/raw for a later view; at run time those
+    # coins fall to the `check` bin via the confidence threshold.
+    fine_v1:
+      rules:
+        - ["_triage/cluster",      "reject"]
+        - ["_triage/partial",      "reject"]
+        - ["_triage/overlap",      "reject"]
+        - ["dime_roosevelt_obv",   "dime_roosevelt_obv"]
+        - ["dime_roosevelt_rev",   "dime_roosevelt_rev"]
+        - ["nickel_jefferson_obv", "nickel_jefferson_obv"]
+        - ["nickel_jefferson_rev", "nickel_jefferson_rev"]
+        - ["penny_lincoln_obv",    "penny_lincoln_obv"]
+        - ["penny_memorial_rev",   "penny_memorial_rev"]
+        - ["penny_shield_rev",     "penny_shield_rev"]
+        - ["quarter_washington_*", "quarter_washington_*"]
+        - ["reject",               "reject"]
+        - ["*",                    null]
   # Train/val split fraction (val = 1 - train_frac).
   train_frac: 0.85
   # Random seed for the split.

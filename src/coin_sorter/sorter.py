@@ -4,11 +4,19 @@ Pipeline:
     1. Open the Pi Camera via picamera2.
     2. Open the Pico serial link.
     3. For each frame:
-        a. (TODO) Gate on motion / coin presence so we do not classify empty belt.
-        b. Run the ONNX classifier.
-        c. Map the label to a physical bin via ``sorter.sort_map`` (unknown
+        a. Crop to the ROI and run ``CoinDetector`` — the same presence gate the
+           capture path uses, so empty belt costs one blob detection and no
+           inference at all.
+        b. Ask the ``Deduper`` whether this frame is the one to act on. In
+           ``centroid_band`` mode a coin fires exactly once, when its centroid
+           crosses the trip line, re-arming only when the belt goes empty.
+        c. Crop tightly around the coin with ``tight_square_crop`` — the model
+           is trained on tight crops, so handing it a full frame would be a
+           train/serve mismatch.
+        d. Run the ONNX classifier on that crop.
+        e. Map the label to a physical bin via ``sorter.sort_map`` (unknown
            labels and low confidence -> ``check``) and send ``SORT <bin>``.
-        d. Cool down for ``sorter.cooldown_ms`` so we do not double-sort.
+        f. Cool down for ``sorter.cooldown_ms`` so we do not double-sort.
 
 The stub classifier (when no ONNX model is present) lets us exercise the
 camera + serial path end-to-end before training is done.
@@ -20,7 +28,6 @@ import argparse
 import logging
 import sys
 import time
-from typing import Any
 
 from . import configure_logging, load_config
 from .infer import CoinClassifier
@@ -64,16 +71,6 @@ def _open_camera(
     return picam
 
 
-def _should_classify(_frame: Any) -> bool:
-    """Motion / coin-presence gate.
-
-    TODO: implement frame differencing or a lightweight blob detector so we
-    only run the classifier when something is actually on the belt. For now
-    we run on every frame, which is fine for stub-mode debugging.
-    """
-    return True
-
-
 def run(cfg: dict, max_iters: int | None = None) -> None:
     """Run the main loop. `max_iters` is for testing; None = forever."""
     serial_cfg = cfg["serial"]
@@ -87,6 +84,22 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
     }
     cooldown_s = float(sorter_cfg["cooldown_ms"]) / 1000.0
     target_period_s = 1.0 / float(sorter_cfg["inference_fps"])
+
+    # Presence gate + tight crop, reusing the capture path so the frames the
+    # model sees at run time are framed exactly like the ones it trained on.
+    from .capture import CoinDetector, Deduper, crop_roi, resolve_roi, tight_square_crop
+
+    cap_params = cfg.get("capture", {})
+    roi_px = resolve_roi(cap_params.get("roi") or cam_cfg.get("roi"),
+                         int(cam_cfg["width"]), int(cam_cfg["height"]))
+    roi_w = roi_px[2] if roi_px else int(cam_cfg["width"])
+    roi_h = roi_px[3] if roi_px else int(cam_cfg["height"])
+    detector = CoinDetector(cap_params, roi_w, roi_h)
+    # One decision per physical coin, regardless of what bulk capture was set to.
+    deduper = Deduper("centroid_band", cap_params, roi_w, roi_h)
+    pad_frac = float(cap_params.get("crop_pad_frac", 0.25))
+    crop_square = bool(cap_params.get("crop_square", True))
+    gated = classified = 0
 
     if classifier.is_stub:
         log.warning(
@@ -124,16 +137,29 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
                 frame = picam.capture_array()  # HxWx3, RGB888 per config above
 
                 # picamera2 RGB888 actually delivers BGR-ordered bytes for OpenCV
-                # compatibility; the classifier expects BGR input.
-                if _should_classify(frame):
-                    label, conf = classifier.predict(frame)
-                    log.info("predict=%s conf=%.3f", label, conf)
-                    bin_ = label_to_bin.get(label, "check") if conf >= threshold else "check"
-                    try:
-                        pico.sort(bin_)
-                        time.sleep(cooldown_s)
-                    except PicoError as e:
-                        log.error("SORT %s (%s) failed: %s", bin_, label, e)
+                # compatibility; the detector and classifier both expect BGR.
+                roi = crop_roi(frame, roi_px)
+                det = detector.detect(roi)
+                if det.found:
+                    gated += 1
+
+                if deduper.should_save(det, time.monotonic()):
+                    crop = tight_square_crop(roi, det, pad_frac, crop_square)
+                    if crop is None:
+                        log.debug("coin at %s produced an empty crop; skipped", det.centroid)
+                    else:
+                        classified += 1
+                        label, conf = classifier.predict(crop)
+                        log.info(
+                            "predict=%s conf=%.3f (centroid=%s fill=%.2f)",
+                            label, conf, det.centroid, det.fill,
+                        )
+                        bin_ = label_to_bin.get(label, "check") if conf >= threshold else "check"
+                        try:
+                            pico.sort(bin_)
+                            time.sleep(cooldown_s)
+                        except PicoError as e:
+                            log.error("SORT %s (%s) failed: %s", bin_, label, e)
 
                 # Pace the loop to roughly inference_fps.
                 elapsed = time.monotonic() - t0
@@ -143,6 +169,12 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
     except KeyboardInterrupt:
         log.info("Interrupted by user.")
     finally:
+        # Gate ratio is the health check: on a running belt `classified` should
+        # track the number of coins that went past, not the frame count.
+        log.info(
+            "%d frames, %d with a coin present, %d classified/sorted.",
+            iters, gated, classified,
+        )
         try:
             picam.stop()
         except Exception:  # pragma: no cover
