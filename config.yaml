@@ -305,6 +305,35 @@ dataset:
         - ["half*",    "half"]
         - ["reject*",  "reject"]
         - ["*",        null]
+    # Nickels only: the first view that answers the question the machine is
+    # actually for -- is this one worth keeping? Three classes matching three
+    # bins, so the confidence threshold alone produces the "cannot tell" case.
+    #
+    # obv/rev are collapsed because every nickel design here is identifiable
+    # from BOTH sides (Buffalo: Native American / bison; Liberty: Liberty head
+    # / big V; Jefferson: Jefferson / Monticello). That doubles the images per
+    # class. It is NOT true for cents, where a wheat and a memorial share the
+    # same obverse -- so do not copy this pattern to a pennies view.
+    #
+    # Pennies and dimes fold into `reject` on purpose: feed a non-nickel and it
+    # lands in `check` rather than being forced into a nickel class.
+    nickels:
+      # Keepers are inherently rare -- 123 images against 639 Jeffersons and
+      # 1735 non-nickels. Cap the big classes so the model cannot win by
+      # always guessing the majority.
+      max_per_class: 300
+      rules:
+        - ["nickel_buffalo_*",   "nickel_keeper"]
+        - ["nickel_liberty_*",   "nickel_keeper"]
+        - ["nickel_shield_*",    "nickel_keeper"]
+        - ["nickel_jefferson_*", "nickel_common"]
+        - ["nickel",             null]            # side-less, design unknown
+        - ["penny*",             "reject"]        # not a nickel -> check bin
+        - ["dime*",              "reject"]
+        - ["_triage/cluster",    "reject"]
+        - ["_triage/partial",    "reject"]
+        - ["_triage/overlap",    "reject"]
+        - ["*",                  null]
     # v1: fine-grained, but only the classes with enough samples to learn.
     # Everything else stays in data/raw for a later view; at run time those
     # coins fall to the `check` bin via the confidence threshold.

@@ -84,7 +84,14 @@ def main() -> int:
 
     if args.view not in views:
         raise SystemExit(f"Unknown view {args.view!r}. Known: {', '.join(views)}")
-    rules = views[args.view].get("rules") or []
+    spec = views[args.view]
+    rules = spec.get("rules") or []
+    # Cap the big classes. Ultralytics classification does not weight classes,
+    # so a 14:1 imbalance teaches the model to answer with the majority class
+    # and be right most of the time -- exactly wrong when the rare class is the
+    # one you built the machine to find.
+    max_per_class = spec.get("max_per_class")
+    max_per_class = int(max_per_class) if max_per_class else None
 
     if not raw_dir.is_dir():
         raise SystemExit(f"{raw_dir} does not exist")
@@ -128,6 +135,10 @@ def main() -> int:
         print(f"  {cls:<{width}}  {counts[cls]:>5}{detail}")
     print(f"\n  {'TOTAL':<{width}}  {sum(counts.values()):>5} images in {len(counts)} classes")
     print(f"  split {train_frac:.0%}/{1 - train_frac:.0%} train/val, seed {seed}, stratified per class")
+    if max_per_class:
+        capped = [c for c in counts if counts[c] > max_per_class]
+        if capped:
+            print(f"  capped to {max_per_class}/class: {', '.join(sorted(capped))}")
 
     if empty:
         print(f"\n  skipped (no images): {', '.join(empty)}")
@@ -155,6 +166,14 @@ def main() -> int:
         for src in sorted((raw_dir / label).rglob("*")):
             if src.suffix.lower() in IMAGE_SUFFIXES:
                 by_class.setdefault(target, []).append((label, src))
+
+    if max_per_class:
+        for cls, items in by_class.items():
+            if len(items) > max_per_class:
+                # Seeded on the class name so the same subset is chosen every
+                # rebuild and runs stay comparable.
+                random.Random(f"{seed}:cap:{cls}").shuffle(items)
+                by_class[cls] = items[:max_per_class]
 
     out = processed_dir / args.view
     if out.exists():
