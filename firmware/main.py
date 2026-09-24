@@ -8,19 +8,24 @@
 #       PUL/DIR/ENA on GP18/19/20, same wiring + inverted ENA as the belt
 #
 # Add later by flipping the flags below:
-#   DIVERTER_ENABLED    - 28BYJ-48 + ULN2003 on GP6/7/8/9
+#   DIVERTER_ENABLED    - MG996R digital servo on GP6 (dish diverter)
 #   HOME_SWITCH_ENABLED - microswitch on GP10
 #   COIN_SENSOR_ENABLED - IR break-beam on GP11
 
 import sys, select, time
-from machine import Pin, mem32
+from machine import Pin, PWM, mem32
 from rp2 import PIO, StateMachine, asm_pio
 from neopixel import NeoPixel
+
+# Diverter servo signal: drive it LOW before anything else can take time.
+# An undriven GP6 floats, and a digital servo (5 us dead band) chases the
+# noise instead of sitting still - which looks exactly like a wiring fault.
+Pin(6, Pin.OUT, value=0)
 
 # ============================================================
 # Feature flags - flip to True as you wire each subsystem
 # ============================================================
-DIVERTER_ENABLED    = False
+DIVERTER_ENABLED    = True
 HOME_SWITCH_ENABLED = False
 COIN_SENSOR_ENABLED = False
 
@@ -160,28 +165,39 @@ def ring_fill(r, g, b):
 ring_fill(0, 0, 0)  # start dark
 
 # ============================================================
-# Diverter stepper (28BYJ-48 / ULN2003) - optional
+# Diverter servo (MG996R digital, GP6) - optional
 # ============================================================
-HALF_STEP_SEQ = [
-    (1,0,0,0), (1,1,0,0), (0,1,0,0), (0,1,1,0),
-    (0,0,1,0), (0,0,1,1), (0,0,0,1), (1,0,0,1),
-]
-DIV_STEPS_PER_REV = 4096
-DIV_STEP_DELAY_MS = 2
+# The dish is a fixed-tilt plate on a vertical axis: rotating it aims its one
+# downhill direction at a bin. Nothing to home against - position is absolute
+# pulse width. Deegoo-FPV MG996R: 500-2500 us = 0-180 deg (~11.1 us/deg),
+# 5 us dead band. The axis is gravity-neutral, so holding torque is ~zero.
+SERVO_PIN          = 6
+SERVO_MIN_US       = 800     # clamps: keep well clear of the mechanical stops
+SERVO_MAX_US       = 2200    # (bins sit at 900/2100, so there is trim room)
+SERVO_RAMP_US      = 12      # per step while slewing (0 = jump straight there)
+SERVO_RAMP_MS      = 6
+SERVO_SETTLE_MS    = 300     # 0.14 s/60deg -> a full 110 deg move is ~260 ms
+SERVO_DETACH_IDLE  = False   # True = stop pulses once settled (test first:
+                             # digital servos may stay stiff, not go limp)
 
 if DIVERTER_ENABLED:
-    DIV_PINS = [Pin(p, Pin.OUT, value=0) for p in (6, 7, 8, 9)]
+    SERVO = PWM(Pin(SERVO_PIN))
+    SERVO.freq(50)
 else:
-    DIV_PINS = None
+    SERVO = None
 
+# Calibrated by eye with scripts/servo_jog.py, 2026-09-22.
 BIN_POSITIONS = {
-    "home":    0,
-    "penny":   400,
-    "nickel":  800,
-    "dime":    1200,
-    "quarter": 1600,
-    "reject":  2000,
+    "common": 1500,   # straight down the belt
+    "keep":    900,   # near side
+    "check":  2100,   # far side
 }
+
+if DIVERTER_ENABLED:
+    # Park at common on boot: a fresh PWM has duty 0 (pin low, no pulses), so
+    # without this the dish would sit wherever it was left.
+    SERVO.duty_ns(BIN_POSITIONS["common"] * 1000)
+
 BELT_STEPS_PER_COIN = 400
 
 # ============================================================
@@ -198,9 +214,9 @@ state = {
     "speed_hz": 1500,
     "busy": False,
     "belt_position": 0,
-    "div_position": 0,
-    "div_step_idx": 0,
-    "homed": not HOME_SWITCH_ENABLED,   # auto-homed when no switch
+    "div_position": 1500,   # servo pulse width in us
+
+    "homed": True,                      # servo is absolute - nothing to home
     "running": False,                   # True while the belt free-runs (RUN)
     "feeder_speed_hz": 1500,
     "feeder_running": False,            # True while the feeder free-runs (FRUN)
@@ -308,56 +324,59 @@ def feeder_stop():
 # ============================================================
 # Diverter motion (no-ops when disabled)
 # ============================================================
-def div_step_once(direction):
+def div_write_us(us):
     if not DIVERTER_ENABLED: return
-    state["div_step_idx"] = (state["div_step_idx"] + (1 if direction else -1)) % 8
-    seq = HALF_STEP_SEQ[state["div_step_idx"]]
-    for pin, val in zip(DIV_PINS, seq):
-        pin.value(val)
-    state["div_position"] += 1 if direction else -1
+    us = max(SERVO_MIN_US, min(SERVO_MAX_US, int(us)))
+    SERVO.duty_ns(us * 1000)
+    state["div_position"] = us
+    return us
 
-def div_move(steps, delay_ms=None):
+def div_move_to(us, ramp=True):
+    """Slew to an absolute pulse width, then wait for the servo to arrive."""
     if not DIVERTER_ENABLED: return
-    if delay_ms is None:
-        delay_ms = DIV_STEP_DELAY_MS
-    direction = 1 if steps >= 0 else 0
+    target = max(SERVO_MIN_US, min(SERVO_MAX_US, int(us)))
+    cur = state["div_position"]
+    if SERVO is None or SERVO.duty_ns() == 0:   # re-attach after a detach
+        div_attach()
     state["busy"] = True
-    for _ in range(abs(steps)):
-        div_step_once(direction)
-        time.sleep_ms(delay_ms)
+    if ramp and SERVO_RAMP_US and cur != target:
+        step = SERVO_RAMP_US if target > cur else -SERVO_RAMP_US
+        for v in range(cur, target, step):
+            div_write_us(v)
+            time.sleep_ms(SERVO_RAMP_MS)
+    div_write_us(target)
+    time.sleep_ms(SERVO_SETTLE_MS)
     state["busy"] = False
+    return target
 
-def div_move_to(target):
+def div_move(delta_us):
     if not DIVERTER_ENABLED: return
-    div_move(target - state["div_position"])
+    return div_move_to(state["div_position"] + int(delta_us))
+
+def div_attach():
+    """Re-establish the pulse train after div_release()."""
+    global SERVO
+    if not DIVERTER_ENABLED: return
+    SERVO = PWM(Pin(SERVO_PIN))
+    SERVO.freq(50)
+    SERVO.duty_ns(state["div_position"] * 1000)
 
 def div_release():
-    if not DIVERTER_ENABLED: return
-    for pin in DIV_PINS:
-        pin.value(0)
+    """Stop pulses and hold GP6 low - never leave the pin floating."""
+    global SERVO
+    if not DIVERTER_ENABLED or not SERVO_DETACH_IDLE: return
+    SERVO.deinit()
+    SERVO = None
+    Pin(SERVO_PIN, Pin.OUT, value=0)
 
-def div_home(timeout_steps=4500):
-    """Home the diverter. Returns True on success."""
+def div_home(timeout_steps=0):
+    """No homing needed - the servo is absolute. Park at 'common'."""
     if not DIVERTER_ENABLED:
         state["homed"] = True
         return True
-    if not HOME_SWITCH_ENABLED:
-        state["div_position"] = 0
-        state["homed"] = True
-        return True
-    if HOME_SW.value() == 0:
-        div_move(300)
-        time.sleep_ms(100)
-    for _ in range(timeout_steps):
-        if HOME_SW.value() == 0:
-            state["div_position"] = 0
-            state["homed"] = True
-            div_release()
-            return True
-        div_step_once(0)
-        time.sleep_ms(DIV_STEP_DELAY_MS)
-    div_release()
-    return False
+    div_move_to(BIN_POSITIONS["common"])
+    state["homed"] = True
+    return True
 
 # ============================================================
 # Coin sensor
@@ -392,8 +411,8 @@ def sort_coin(bin_name):
     if not state["homed"]:
         return "ERR not homed - send HOME first"
     if DIVERTER_ENABLED:
+        # Pre-position BEFORE the coin tips off the roller nose.
         div_move_to(BIN_POSITIONS[bin_name])
-        time.sleep_ms(150)
     belt_move(BELT_STEPS_PER_COIN)
     time.sleep_ms(200)
     if DIVERTER_ENABLED:
@@ -464,7 +483,7 @@ def handle(line):
         elif cmd == "DIV":
             div_move(int(parts[1])); div_release()
             print(f"OK {state['div_position']}")
-        elif cmd == "DIVTO":
+        elif cmd == "DIVTO" or cmd == "SERVO":
             div_move_to(int(parts[1])); div_release()
             print(f"OK {state['div_position']}")
         elif cmd == "HOME":
