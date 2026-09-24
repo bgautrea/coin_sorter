@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import pathlib
+import random
 import shutil
 import sys
 from collections import Counter
@@ -40,8 +42,12 @@ def load_views(cfg_path: Path) -> tuple[dict, Path, Path]:
     views = ds.get("views") or {}
     if not views:
         raise SystemExit(f"No dataset.views defined in {cfg_path}")
-    return views, REPO / ds.get("raw_dir", "data/raw"), REPO / ds.get(
-        "processed_dir", "data/processed"
+    return (
+        views,
+        REPO / ds.get("raw_dir", "data/raw"),
+        REPO / ds.get("processed_dir", "data/processed"),
+        float(ds.get("train_frac", 0.85)),
+        int(ds.get("seed", 1337)),
     )
 
 
@@ -68,7 +74,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="report, write nothing")
     args = ap.parse_args()
 
-    views, raw_dir, processed_dir = load_views(args.config)
+    views, raw_dir, processed_dir, train_frac, seed = load_views(args.config)
 
     if args.list or not args.view:
         print("Views in", args.config.name)
@@ -121,6 +127,7 @@ def main() -> int:
         detail = "" if srcs == [cls] else "  <- " + ", ".join(srcs)
         print(f"  {cls:<{width}}  {counts[cls]:>5}{detail}")
     print(f"\n  {'TOTAL':<{width}}  {sum(counts.values()):>5} images in {len(counts)} classes")
+    print(f"  split {train_frac:.0%}/{1 - train_frac:.0%} train/val, seed {seed}, stratified per class")
 
     if empty:
         print(f"\n  skipped (no images): {', '.join(empty)}")
@@ -140,24 +147,45 @@ def main() -> int:
         print("\n(dry run, nothing written)")
         return 0
 
+    # Ultralytics classification requires <root>/train/<class>/ and
+    # <root>/val/<class>/ -- a bare folder-per-class tree makes
+    # check_cls_dataset raise. Collect per class first, then split.
+    by_class: dict[str, list[tuple[str, pathlib.Path]]] = {}
+    for label, target in mapping.items():
+        for src in sorted((raw_dir / label).rglob("*")):
+            if src.suffix.lower() in IMAGE_SUFFIXES:
+                by_class.setdefault(target, []).append((label, src))
+
     out = processed_dir / args.view
     if out.exists():
         shutil.rmtree(out)
-    for label, target in mapping.items():
-        dst = out / target
-        dst.mkdir(parents=True, exist_ok=True)
-        for src in sorted((raw_dir / label).rglob("*")):
-            if src.suffix.lower() not in IMAGE_SUFFIXES:
-                continue
-            # Prefix with the raw label: two source labels folding into one
-            # class can contain identically-named files. Flatten any "/" in the
-            # label (quarantine sources look like "_triage/cluster") so the
-            # prefix stays a filename and does not invent a subdirectory.
-            link = dst / f"{label.replace('/', '__')}__{src.name}"
-            if not link.exists():
-                link.symlink_to(src.resolve())
 
-    print(f"\nWrote {out} ({sum(counts.values())} symlinks). data/raw untouched.")
+    split_counts: dict[str, tuple[int, int]] = {}
+    for cls, items in by_class.items():
+        # Stratified and deterministic: every class keeps the same ratio, and
+        # the same seed reproduces the split so runs stay comparable.
+        rng = random.Random(f"{seed}:{cls}")
+        rng.shuffle(items)
+        n_train = max(1, round(len(items) * train_frac)) if len(items) > 1 else len(items)
+        for split, chunk in (("train", items[:n_train]), ("val", items[n_train:])):
+            dst = out / split / cls
+            dst.mkdir(parents=True, exist_ok=True)
+            for label, src in chunk:
+                # Prefix with the raw label: two source labels folding into one
+                # class can contain identically-named files. Flatten any "/" in
+                # the label (quarantine sources look like "_triage/cluster") so
+                # the prefix stays a filename, not a subdirectory.
+                link = dst / f"{label.replace('/', '__')}__{src.name}"
+                if not link.exists():
+                    link.symlink_to(src.resolve())
+        split_counts[cls] = (n_train, len(items) - n_train)
+
+    print(f"\nWrote {out}. data/raw untouched.")
+    print(f"  {'class':<{width}}  {'train':>6} {'val':>5}")
+    for cls in sorted(split_counts):
+        tr, va = split_counts[cls]
+        warn = "   <- val too small to be meaningful" if va < 10 else ""
+        print(f"  {cls:<{width}}  {tr:>6} {va:>5}{warn}")
     print(f"Bundle it with:  ./scripts/zip_dataset.sh --view {args.view}")
     return 0
 
