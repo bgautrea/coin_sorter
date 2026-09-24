@@ -166,6 +166,19 @@ sorter:
   # one coin, note the detection timestamp in the log, and time it to the nose:
   #   python -m coin_sorter.sorter --belt-hz 550 --no-sort --measure-transport
   transport_delay_s: 30.0
+  # Aim this far BEFORE the coin is due at the nose. The dish must be settled
+  # when the coin tips off, not still moving -- so the lead covers the servo
+  # slew and settle plus a margin for belt-speed drift over the transport.
+  divert_lead_s: 0.75
+  # After a coin has passed, return the dish here. `common` is the straight-
+  # ahead, power-off-safe position, so anything that arrives unscheduled (a
+  # coin the gate missed, a double-feed) falls to the default bin rather than
+  # into whichever bin the last sorted coin happened to need.
+  neutral_bin: common
+  # How long after a divert to wait before returning to neutral: long enough
+  # for the coin to have left the dish. Skipped if another divert is due
+  # sooner, so a dense run does not bounce the servo back and forth.
+  neutral_after_s: 1.0
   # How long the dish holds a bin before the next scheduled divert may move it.
   # Must exceed the servo settle (SERVO_SETTLE_MS in firmware, 300 ms) plus the
   # coin's fall; it bounds how closely spaced arrivals can be.

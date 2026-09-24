@@ -92,9 +92,12 @@ class DivertQueue:
     aiming the dish for it would only mis-sort whichever coin is there now.
     """
 
-    def __init__(self, delay_s: float, hold_s: float) -> None:
+    def __init__(self, delay_s: float, hold_s: float, lead_s: float = 0.0) -> None:
         self.delay_s = float(delay_s)
         self.hold_s = float(hold_s)
+        # Aim early: the dish has to be SETTLED when the coin tips off, not
+        # still slewing. The lead covers servo travel plus belt-speed drift.
+        self.lead_s = float(lead_s)
         self._q: deque[tuple[float, str, str]] = deque()
 
     def __len__(self) -> int:
@@ -102,9 +105,13 @@ class DivertQueue:
 
     def schedule(self, bin_: str, label: str, now: float) -> float:
         """Queue a divert for a coin detected at `now`. Returns its due time."""
-        due = now + self.delay_s
+        due = now + self.delay_s - self.lead_s
         self._q.append((due, bin_, label))
         return due
+
+    def next_due(self) -> float | None:
+        """When the next divert comes due, or None if nothing is in flight."""
+        return self._q[0][0] if self._q else None
 
     def due(self, now: float) -> list[tuple[str, str, float, bool]]:
         """Pop everything whose time has come.
@@ -156,7 +163,12 @@ def run(
     if transport_delay_s is None:
         transport_delay_s = float(sorter_cfg.get("transport_delay_s", 0.0))
     hold_s = float(sorter_cfg.get("divert_hold_s", 0.5))
-    queue = DivertQueue(transport_delay_s, hold_s)
+    lead_s = float(sorter_cfg.get("divert_lead_s", 0.0))
+    neutral_bin = sorter_cfg.get("neutral_bin") or None
+    neutral_after_s = float(sorter_cfg.get("neutral_after_s", 1.0))
+    queue = DivertQueue(transport_delay_s, hold_s, lead_s)
+    dish_bin: str | None = None      # where the dish is currently aimed
+    last_divert_at: float | None = None
 
     # Presence gate + tight crop, reusing the capture path so the frames the
     # model sees at run time are framed exactly like the ones it trained on.
@@ -284,7 +296,9 @@ def run(
                         continue
                     try:
                         pico.sort(bin_)
-                        latencies.append(transport_delay_s + late)
+                        dish_bin = bin_
+                        last_divert_at = time.monotonic()
+                        latencies.append(transport_delay_s - lead_s + late)
                         log.info(
                             "divert -> %s for %s (%.2fs late, %d still in flight)",
                             bin_, label, late, len(queue),
@@ -292,6 +306,24 @@ def run(
                         time.sleep(hold_s)
                     except PicoError as e:
                         log.error("SORT %s (%s) failed: %s", bin_, label, e)
+
+                # Park at neutral once the coin has left the dish, so anything
+                # arriving unscheduled falls to the default bin instead of the
+                # last sorted coin's. Skipped when another divert is imminent,
+                # which would only bounce the servo there and back.
+                if neutral_bin and dish_bin not in (None, neutral_bin) and last_divert_at:
+                    now = time.monotonic()
+                    nxt = queue.next_due()
+                    if now - last_divert_at >= neutral_after_s and (
+                        nxt is None or nxt - now > neutral_after_s
+                    ):
+                        try:
+                            pico.sort(neutral_bin)
+                            log.debug("dish returned to neutral (%s)", neutral_bin)
+                            dish_bin = neutral_bin
+                            last_divert_at = None
+                        except PicoError as e:
+                            log.error("SORT %s (neutral) failed: %s", neutral_bin, e)
 
                 # Pace the loop to roughly inference_fps.
                 elapsed = time.monotonic() - t0
@@ -311,9 +343,9 @@ def run(
             latencies.sort()
             log.info(
                 "scheduled->diverted: min %.1fs median %.1fs max %.1fs "
-                "(target transport_delay_s=%.1fs)",
+                "(target %.1fs = transport %.1fs - lead %.1fs)",
                 latencies[0], latencies[len(latencies) // 2], latencies[-1],
-                transport_delay_s,
+                transport_delay_s - lead_s, transport_delay_s, lead_s,
             )
         if len(queue):
             log.warning(

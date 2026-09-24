@@ -260,3 +260,25 @@ def test_within_hold_window_still_diverts():
     (_bin, _label, late, missed), = q.due(now=130.4)
     assert missed is False
     assert late == pytest.approx(0.4)
+
+
+def test_lead_aims_the_dish_early():
+    """The dish must be settled when the coin tips off, not still slewing."""
+    from coin_sorter.sorter import DivertQueue
+
+    q = DivertQueue(delay_s=15.0, hold_s=0.5, lead_s=0.75)
+    due = q.schedule("keep", "penny", now=100.0)
+    assert due == pytest.approx(114.25)      # 15.0 - 0.75 ahead of arrival
+    assert q.due(now=114.0) == []
+    assert len(q.due(now=114.25)) == 1
+
+
+def test_next_due_reports_the_head_without_popping():
+    from coin_sorter.sorter import DivertQueue
+
+    q = DivertQueue(delay_s=15.0, hold_s=0.5)
+    assert q.next_due() is None
+    q.schedule("keep", "penny", now=100.0)
+    q.schedule("common", "nickel", now=102.0)
+    assert q.next_due() == pytest.approx(115.0)   # earliest, still queued
+    assert len(q) == 2
