@@ -34,6 +34,7 @@ import cv2
 
 from . import configure_logging, load_config
 from . import capture as cap
+from .sorter import DivertQueue
 
 log = logging.getLogger("coin_sorter.webcal")
 
@@ -52,12 +53,47 @@ _RECIPE_KEYS = ("focus_mode", "lens", "awb_mode", "red", "blue", "exp_mode", "ex
 _recipe: dict = {}
 _pico_lock = threading.Lock()  # camera thread and feeder pulser share the Pico
 _raw_dir = [None]  # base directory for captured crops; set in main()
+_clf = [None]  # CoinClassifier, loaded on the first sorting session
+_cfg = [None]  # the loaded config, for routes that need it
+
+
+def _get_classifier(cfg: dict):  # type: ignore[no-untyped-def]
+    """Load the ONNX classifier once, on demand.
+
+    Deferred so webcal still starts (for capture and tagging) on a machine with
+    no trained model, and so the import cost is not paid by every session.
+    """
+    if _clf[0] is None:
+        from .infer import CoinClassifier
+
+        clf = CoinClassifier.from_config(cfg)
+        if clf.is_stub:
+            log.warning("No ONNX model — sorting would send everything to one bin.")
+            return None
+        log.info("Sorting with %s", ", ".join(clf.labels))
+        _clf[0] = clf
+    return _clf[0]
+
+
+# Physical layout of the three cups, as seen standing at the discharge end.
+# The firmware knows bins by name; the operator knows them by position.
+BIN_SIDES = [("check", "left"), ("common", "centre"), ("keep", "right")]
+
+
+def _default_bin_map(cfg: dict) -> dict:
+    """label -> bin, seeded from sorter.sort_map so the UI opens at config."""
+    sm = (cfg.get("sorter") or {}).get("sort_map") or {}
+    out = {lab: b for b, labs in sm.items() for lab in (labs or [])}
+    for lab in (cfg.get("classifier") or {}).get("labels") or []:
+        out.setdefault(lab, "check")   # unmapped is a decision not to guess
+    return out
 
 
 def default_state(cfg: dict) -> dict:
     """Build the initial UI state from config (so the UI opens at current values)."""
     cam = cfg.get("camera", {})
     capc = cfg.get("capture", {})
+    srt = cfg.get("sorter", {})
     roi = cam.get("roi") or [0.0, 0.0, 1.0, 1.0]
     gains = cam.get("colour_gains") or [2.0, 2.0]
     rgb = capc.get("light_rgb") or [180, 180, 180]
@@ -89,6 +125,19 @@ def default_state(cfg: dict) -> dict:
         "feeder_on_ms": int(capc.get("feeder_on_ms", 0)),
         "feeder_period_ms": int(capc.get("feeder_period_ms", 2000)),
         "session_active": False, "label": "", "count": 0,
+        # Sorting session. bin_map is label -> bin; the UI shows it as
+        # left/centre/right because that is what you see at the machine.
+        "sort_active": False,
+        "bin_map": dict(_default_bin_map(cfg)),
+        "sort_counts": {"keep": 0, "common": 0, "check": 0, "missed": 0},
+        "in_flight": 0,
+        "last_sort": "",
+        "threshold": float((cfg.get("classifier") or {}).get("confidence_threshold", 0.9)),
+        # Timing for the divert queue; see sorter.py. The camera decides far
+        # upstream of the dish, so diverts are scheduled for arrival.
+        "transport_delay_s": float(srt.get("transport_delay_s", 0.0)),
+        "divert_lead_s": float(srt.get("divert_lead_s", 0.0)),
+        "divert_hold_s": float(srt.get("divert_hold_s", 0.5)),
         # live readout (written by the camera thread)
         "det": False, "area_frac": 0.0, "det_circ": 0.0, "sharp": 0.0, "meta": {},
     }
@@ -319,6 +368,8 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
         threading.Thread(target=feeder_pulser, args=(pico,), daemon=True).start()
     det_cache: dict = {"key": None, "det": None}
     applied_ver, prev_session = -1, False
+    prev_sort, clf, sort_dedup, queue = False, None, None, None
+    dish_bin, last_divert = None, None
     frame_n, meta = 0, {}
     try:
         while _running[0]:
@@ -367,7 +418,9 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                     )
                     camera_thread._dedup = self_dedup  # type: ignore[attr-defined]
                 dd = camera_thread._dedup  # type: ignore[attr-defined]
-                if det.found and dd.should_save(det, now):
+                # Called unconditionally: centroid_band re-arms on empty
+                # frames from inside should_save (see the sorting block below).
+                if dd.should_save(det, now):
                     crop = cap.tight_square_crop(
                         roi_img, det, float(_capc.get("crop_pad_frac", 0.25)),
                         bool(_capc.get("crop_square", True)),
@@ -380,6 +433,66 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                         with _lock:
                             _state["count"] += 1
             prev_session = st["session_active"]
+
+            # ---- sorting session -------------------------------------
+            # Runs in this thread because webcal already owns the camera and
+            # the Pico; a separate sorter process would fight it for both.
+            if st["sort_active"]:
+                if not prev_sort:
+                    clf = _get_classifier(cfg)
+                    sort_dedup = cap.Deduper(
+                        "centroid_band",
+                        {**params, "travel_axis": "y", "band_center_frac": 0.5,
+                         "band_halfwidth_frac": 0.08, "min_interval_s": 0.4},
+                        rw, rh,
+                    )
+                    queue = DivertQueue(
+                        float(st["transport_delay_s"]), float(st["divert_hold_s"]),
+                        float(st["divert_lead_s"]),
+                    )
+                # NB: should_save must be called on EVERY frame, including
+                # empty ones -- centroid_band re-arms itself inside it when the
+                # ROI goes empty. Short-circuiting on det.found leaves it
+                # disarmed after the first coin and nothing sorts again.
+                if clf is not None and sort_dedup.should_save(det, now):
+                    crop = cap.tight_square_crop(
+                        roi_img, det, float(_capc.get("crop_pad_frac", 0.25)),
+                        bool(_capc.get("crop_square", True)),
+                    )
+                    if crop is not None:
+                        label, conf = clf.predict(crop)
+                        bin_ = st["bin_map"].get(label, "check")
+                        if conf < float(st["threshold"]):
+                            bin_ = "check"     # cannot tell -> re-feed pile
+                        queue.schedule(bin_, label, now)
+                        with _lock:
+                            _state["last_sort"] = f"{label} {conf:.2f} -> {bin_}"
+                            _state["in_flight"] = len(queue)
+                for bin_, label, late, missed in queue.due(now):
+                    if missed:
+                        with _lock:
+                            _state["sort_counts"]["missed"] += 1
+                        continue
+                    if pico is not None:
+                        try:
+                            pico.sort(bin_)
+                            dish_bin, last_divert = bin_, now
+                        except Exception as e:  # pragma: no cover - hardware
+                            log.error("SORT %s failed: %s", bin_, e)
+                    with _lock:
+                        _state["sort_counts"][bin_] = _state["sort_counts"].get(bin_, 0) + 1
+                        _state["in_flight"] = len(queue)
+                # park at neutral once the coin has cleared
+                if (pico is not None and dish_bin not in (None, "common")
+                        and last_divert and now - last_divert >= 1.0):
+                    nxt = queue.next_due()
+                    if nxt is None or nxt - now > 1.0:
+                        try:
+                            pico.sort("common")
+                            dish_bin, last_divert = "common", None
+                        except Exception:  # pragma: no cover - hardware
+                            pass
+            prev_sort = st["sort_active"]
 
             roi_area = float(rw * rh) or 1.0
             with _lock:
@@ -515,6 +628,20 @@ select#gallabel{background:#222;color:#eee;border:1px solid #555;padding:5px;bor
   </div>
  </div>
 </div>
+<div id=sortpanel style="border:1px solid #333;padding:8px;margin:8px 0">
+ <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+  <button id=sortbtn onclick="toggleSort()">Start sorting</button>
+  <span id=sortmodel style="font-size:11px;color:#888"></span>
+  <span id=sortstat style="font-size:12px;color:#9cf"></span>
+ </div>
+ <div id=sortmap style="margin-top:8px"></div>
+ <p style="font-size:11px;color:#888;margin:6px 0 0">
+  Each class goes to one cup. Anything the model scores below the confidence
+  threshold goes to <b>check</b> regardless, so "cannot tell" and "not mapped"
+  land in the same re-feed pile. Coins divert about
+  <span id=sortdelay></span>s after they pass the camera, so the cups fill on a
+  delay -- let the belt run that long past your last coin.</p>
+</div>
 <div id=gallery class=gallery></div>
 </div>
 </div>
@@ -622,7 +749,47 @@ function delCap(l,n,div){
   fetch('/capture_del?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n),{method:'POST'})
     .then(r=>{if(r.ok&&div)div.remove();});
 }
-function init(s){LABELS=s.labels||[];for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz','feeder_on_ms','feeder_period_ms']){
+function renderSortMap(){
+  return fetch('/sortlabels').then(r=>r.json()).then(d=>{
+    document.getElementById('sortmodel').textContent =
+      d.stub ? 'no model loaded' : d.model;
+    const box=document.getElementById('sortmap'); box.innerHTML='';
+    for(const lab of d.labels){
+      const row=document.createElement('div');
+      row.style.cssText='display:flex;gap:6px;align-items:center;margin:3px 0';
+      const n=document.createElement('span');
+      n.textContent=lab; n.style.cssText='width:150px;font-family:monospace;font-size:12px';
+      row.appendChild(n);
+      for(const s of d.sides){
+        const b=document.createElement('button');
+        b.textContent=s.side;
+        if(d.bin_map[lab]===s.bin)b.classList.add('active');
+        b.onclick=()=>{fetch('/sortmap?label='+encodeURIComponent(lab)+'&bin='+s.bin)
+          .then(()=>renderSortMap());};
+        row.appendChild(b);
+      }
+      box.appendChild(row);
+    }
+  });
+}
+function toggleSort(){
+  const on=document.getElementById('sortbtn').classList.contains('active');
+  fetch('/sort?action='+(on?'stop':'start')).then(r=>r.json()).then(paintSort);
+}
+function paintSort(s){
+  const b=document.getElementById('sortbtn');
+  if(s.sort_active){b.classList.add('active');b.textContent='Stop sorting';}
+  else{b.classList.remove('active');b.textContent='Start sorting';}
+  const c=s.sort_counts||{};
+  document.getElementById('sortstat').textContent=
+    'left '+(c.check||0)+'  centre '+(c.common||0)+'  right '+(c.keep||0)+
+    (c.missed?('  missed '+c.missed):'')+
+    '   in flight '+(s.in_flight||0)+(s.last_sort?('   last: '+s.last_sort):'');
+}
+function init(s){LABELS=s.labels||[];
+  document.getElementById('sortdelay').textContent=
+    ((s.transport_delay_s||0)-(s.divert_lead_s||0)).toFixed(1);
+  renderSortMap(); paintSort(s);for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz','feeder_on_ms','feeder_period_ms']){
   const sk=(k==='exp')?'exp_us':k;
   const el=document.getElementById(k);if(el&&s[sk]!==undefined){el.value=s[sk];document.getElementById(k+'v').textContent=(+s[sk]).toFixed(2);}}
   document.getElementById('afauto').classList.toggle('active',s.focus_mode==='continuous');
@@ -639,6 +806,7 @@ setInterval(()=>{fetch('/status').then(r=>r.json()).then(s=>{
   document.getElementById('stat').textContent=(s.detected?'● COIN':'○ none')+
     '  area='+s.area_frac.toFixed(3)+'  circ='+s.circ.toFixed(2)+(s.detected?'  sharp='+s.sharp.toFixed(0):'');
   document.getElementById('recstat').textContent=s.session?('REC '+s.label+': '+s.count):'idle';
+  paintSort(s);
 });},500);
 </script></body></html>
 """
@@ -730,17 +898,65 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     "meta": _state["meta"],
                     "session": _state["session_active"],
                     "label": _state["label"], "count": _state["count"], "belt": _state["belt"],
+                    "sort_active": _state["sort_active"],
+                    "sort_counts": dict(_state["sort_counts"]),
+                    "in_flight": _state["in_flight"], "last_sort": _state["last_sort"],
                 }
             self._send(200, "application/json", json.dumps(s).encode())
         elif u.path == "/state":
             with _lock:
                 s = dict(_state)
-            s["labels"] = list(_labels)
+            # Tagging targets are the label TAXONOMY, which is not the same as
+            # the deployed model's output classes. config.local.yaml overrides
+            # classifier.labels to whatever the current ONNX emits (for v0,
+            # just dime/nickel/penny/reject), and tagTargets() filters by
+            # prefix -- so retagging a `nickel` crop into nickel_buffalo_obv
+            # offered no targets at all. Union in whatever exists on disk.
+            base = _raw_dir[0]
+            on_disk = (
+                [d.name for d in base.iterdir()
+                 if d.is_dir() and not d.name.startswith(("_", "."))]
+                if base is not None and base.is_dir() else []
+            )
+            s["labels"] = sorted(set(_labels) | set(on_disk))
             self._send(200, "application/json", json.dumps(s).encode())
         elif u.path == "/config":
             with _lock:
                 snip = config_snippet(_state)
             self._send(200, "text/plain", snip.encode())
+        elif u.path == "/sort":
+            act = q.get("action", ["status"])[0]
+            with _lock:
+                if act == "start":
+                    _state["sort_active"] = True
+                    _state["sort_counts"] = {"keep": 0, "common": 0, "check": 0, "missed": 0}
+                elif act == "stop":
+                    _state["sort_active"] = False
+                s = {k: _state[k] for k in
+                     ("sort_active", "sort_counts", "in_flight", "last_sort", "bin_map")}
+            self._send(200, "application/json", json.dumps(s).encode())
+        elif u.path == "/sortmap":
+            lab = q.get("label", [""])[0]
+            b = q.get("bin", [""])[0]
+            ok = bool(lab) and b in {name for name, _side in BIN_SIDES}
+            if ok:
+                with _lock:
+                    _state["bin_map"][lab] = b
+            self._send(200, "application/json",
+                       json.dumps({"ok": ok, "label": lab, "bin": b}).encode())
+        elif u.path == "/sortlabels":
+            # Labels the loaded model actually emits, so the UI cannot offer a
+            # mapping for a class this model will never predict.
+            clf = _get_classifier(_cfg[0]) if _cfg[0] else None
+            with _lock:
+                bm = dict(_state["bin_map"])
+            labs = list(clf.labels) if clf is not None else sorted(bm)
+            self._send(200, "application/json", json.dumps({
+                "labels": labs, "bin_map": bm,
+                "sides": [{"bin": b, "side": sd} for b, sd in BIN_SIDES],
+                "model": (_cfg[0].get("model", {}) or {}).get("path", "") if _cfg[0] else "",
+                "stub": clf is None,
+            }).encode())
         elif u.path == "/folders":
             base = _raw_dir[0]
             out = []
@@ -834,6 +1050,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     cfg = load_config(args.config)
+    _cfg[0] = cfg
     raw_dir = Path(cfg["dataset"]["raw_dir"])
     _raw_dir[0] = raw_dir
     global _state

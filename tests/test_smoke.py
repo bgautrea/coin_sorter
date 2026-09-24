@@ -282,3 +282,25 @@ def test_next_due_reports_the_head_without_popping():
     q.schedule("common", "nickel", now=102.0)
     assert q.next_due() == pytest.approx(115.0)   # earliest, still queued
     assert len(q) == 2
+
+
+def test_deduper_rearms_only_when_called_on_empty_frames():
+    """centroid_band re-arms inside should_save(), so callers must not
+    short-circuit on det.found -- doing so disarms it after one coin."""
+    from coin_sorter.capture import Deduper, Detection
+
+    params = {"travel_axis": "y", "band_center_frac": 0.5,
+              "band_halfwidth_frac": 0.08, "min_interval_s": 0.0}
+    in_band = Detection(found=True, centroid=(640, 360), bbox=(600, 320, 80, 80),
+                        area=5000, fill=0.95)
+    empty = Detection(found=False)
+
+    d = Deduper("centroid_band", params, 1280, 720)
+    assert d.should_save(in_band, 1.0) is True      # first coin fires
+    d.should_save(empty, 2.0)                       # belt clears -> re-arm
+    assert d.should_save(in_band, 3.0) is True      # second coin fires
+
+    # The bug: never calling it on empty frames leaves it disarmed forever.
+    d2 = Deduper("centroid_band", params, 1280, 720)
+    assert d2.should_save(in_band, 1.0) is True
+    assert d2.should_save(in_band, 3.0) is False    # still disarmed
