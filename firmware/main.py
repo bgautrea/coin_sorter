@@ -187,16 +187,26 @@ else:
     SERVO = None
 
 # Calibrated by eye with scripts/servo_jog.py, 2026-09-22.
+#
+# `recheck` is the CENTRE position on purpose. It is where the dish rests, so
+# it is where a coin goes when nothing aimed the dish for it: one the detector
+# never saw, one in a pile, one the gate rejected as a cluster. Those coins are
+# unexamined, not common -- they must land in the pile that gets re-fed, never
+# in the discard. Sorting into the wrong keep pile is a nuisance; sorting an
+# unexamined coin into the discard pile loses it.
 BIN_POSITIONS = {
-    "common": 1500,   # straight down the belt
-    "keep":    900,   # near side
-    "check":  2100,   # far side
+    "keep":     900,   # near side  - what you are hunting for
+    "recheck": 1500,   # straight ahead - DEFAULT: unseen, unsure, piled
+    "reject":  2100,   # far side   - confidently identified, discard
 }
+# Older configs said common/check. Accept both so a stale config.local.yaml
+# fails visibly at the map, not silently at the dish.
+BIN_ALIASES = {"common": "reject", "check": "recheck"}
 
 if DIVERTER_ENABLED:
-    # Park at common on boot: a fresh PWM has duty 0 (pin low, no pulses), so
-    # without this the dish would sit wherever it was left.
-    SERVO.duty_ns(BIN_POSITIONS["common"] * 1000)
+    # Park at the default on boot: a fresh PWM has duty 0 (pin low, no pulses),
+    # so without this the dish would sit wherever it was left.
+    SERVO.duty_ns(BIN_POSITIONS["recheck"] * 1000)
 
 BELT_STEPS_PER_COIN = 400
 # With the belt free-running (RUN) the Pi gates on coins crossing a trip line,
@@ -410,6 +420,7 @@ def fire(ms):
 # High-level sort
 # ============================================================
 def sort_coin(bin_name):
+    bin_name = BIN_ALIASES.get(bin_name, bin_name)
     if bin_name not in BIN_POSITIONS:
         return f"ERR unknown bin: {bin_name}"
     if not state["homed"]:

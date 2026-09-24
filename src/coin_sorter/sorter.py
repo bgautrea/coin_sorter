@@ -164,7 +164,12 @@ def run(
         transport_delay_s = float(sorter_cfg.get("transport_delay_s", 0.0))
     hold_s = float(sorter_cfg.get("divert_hold_s", 0.5))
     lead_s = float(sorter_cfg.get("divert_lead_s", 0.0))
-    neutral_bin = sorter_cfg.get("neutral_bin") or None
+    # Where a coin goes when we cannot say what it is: unknown label, or
+    # confidence below threshold. Same bin the dish rests at, so a coin nothing
+    # aimed for -- never detected, in a pile, rejected as a cluster -- ends up
+    # there too. Unexamined is not the same as common.
+    default_bin = sorter_cfg.get("default_bin", "recheck")
+    neutral_bin = sorter_cfg.get("neutral_bin") or default_bin
     neutral_after_s = float(sorter_cfg.get("neutral_after_s", 1.0))
     queue = DivertQueue(transport_delay_s, hold_s, lead_s)
     dish_bin: str | None = None      # where the dish is currently aimed
@@ -249,7 +254,10 @@ def run(
                         classified += 1
                         t_trip = time.monotonic()
                         label, conf = classifier.predict(crop)
-                        bin_ = label_to_bin.get(label, "check") if conf >= threshold else "check"
+                        bin_ = (
+                            label_to_bin.get(label, default_bin)
+                            if conf >= threshold else default_bin
+                        )
                         if force_bin:
                             bin_ = force_bin
                         t_infer = time.monotonic() - t_trip

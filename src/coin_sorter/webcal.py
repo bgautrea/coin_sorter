@@ -77,7 +77,10 @@ def _get_classifier(cfg: dict):  # type: ignore[no-untyped-def]
 
 # Physical layout of the three cups, as seen standing at the discharge end.
 # The firmware knows bins by name; the operator knows them by position.
-BIN_SIDES = [("check", "left"), ("common", "centre"), ("keep", "right")]
+# `recheck` is centre because centre is where the dish rests: a coin nothing
+# aimed for lands there, and unexamined coins must be re-fed, not discarded.
+BIN_SIDES = [("reject", "left"), ("recheck", "centre"), ("keep", "right")]
+DEFAULT_BIN = "recheck"
 
 
 def _default_bin_map(cfg: dict) -> dict:
@@ -85,7 +88,7 @@ def _default_bin_map(cfg: dict) -> dict:
     sm = (cfg.get("sorter") or {}).get("sort_map") or {}
     out = {lab: b for b, labs in sm.items() for lab in (labs or [])}
     for lab in (cfg.get("classifier") or {}).get("labels") or []:
-        out.setdefault(lab, "check")   # unmapped is a decision not to guess
+        out.setdefault(lab, DEFAULT_BIN)  # unmapped is a decision not to guess
     return out
 
 
@@ -129,7 +132,7 @@ def default_state(cfg: dict) -> dict:
         # left/centre/right because that is what you see at the machine.
         "sort_active": False,
         "bin_map": dict(_default_bin_map(cfg)),
-        "sort_counts": {"keep": 0, "common": 0, "check": 0, "missed": 0},
+        "sort_counts": {b: 0 for b, _side in BIN_SIDES} | {"missed": 0},
         "in_flight": 0,
         "last_sort": "",
         "threshold": float((cfg.get("classifier") or {}).get("confidence_threshold", 0.9)),
@@ -461,9 +464,9 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                     )
                     if crop is not None:
                         label, conf = clf.predict(crop)
-                        bin_ = st["bin_map"].get(label, "check")
+                        bin_ = st["bin_map"].get(label, DEFAULT_BIN)
                         if conf < float(st["threshold"]):
-                            bin_ = "check"     # cannot tell -> re-feed pile
+                            bin_ = DEFAULT_BIN   # cannot tell -> re-feed pile
                         queue.schedule(bin_, label, now)
                         with _lock:
                             _state["last_sort"] = f"{label} {conf:.2f} -> {bin_}"
@@ -483,13 +486,13 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                         _state["sort_counts"][bin_] = _state["sort_counts"].get(bin_, 0) + 1
                         _state["in_flight"] = len(queue)
                 # park at neutral once the coin has cleared
-                if (pico is not None and dish_bin not in (None, "common")
+                if (pico is not None and dish_bin not in (None, DEFAULT_BIN)
                         and last_divert and now - last_divert >= 1.0):
                     nxt = queue.next_due()
                     if nxt is None or nxt - now > 1.0:
                         try:
-                            pico.sort("common")
-                            dish_bin, last_divert = "common", None
+                            pico.sort(DEFAULT_BIN)
+                            dish_bin, last_divert = DEFAULT_BIN, None
                         except Exception:  # pragma: no cover - hardware
                             pass
             prev_sort = st["sort_active"]
@@ -782,7 +785,7 @@ function paintSort(s){
   else{b.classList.remove('active');b.textContent='Start sorting';}
   const c=s.sort_counts||{};
   document.getElementById('sortstat').textContent=
-    'left '+(c.check||0)+'  centre '+(c.common||0)+'  right '+(c.keep||0)+
+    'left '+(c.reject||0)+'  centre '+(c.recheck||0)+'  right '+(c.keep||0)+
     (c.missed?('  missed '+c.missed):'')+
     '   in flight '+(s.in_flight||0)+(s.last_sort?('   last: '+s.last_sort):'');
 }
@@ -929,7 +932,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             with _lock:
                 if act == "start":
                     _state["sort_active"] = True
-                    _state["sort_counts"] = {"keep": 0, "common": 0, "check": 0, "missed": 0}
+                    _state["sort_counts"] = {b: 0 for b, _s in BIN_SIDES} | {"missed": 0}
                 elif act == "stop":
                     _state["sort_active"] = False
                 s = {k: _state[k] for k in
