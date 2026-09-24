@@ -199,6 +199,10 @@ if DIVERTER_ENABLED:
     SERVO.duty_ns(BIN_POSITIONS["common"] * 1000)
 
 BELT_STEPS_PER_COIN = 400
+# With the belt free-running (RUN) the Pi gates on coins crossing a trip line,
+# so SORT must only aim the diverter. Advancing the belt here would also halt
+# the free-run (a finite move and RUN cannot share PUL), stalling the feed.
+SORT_ADVANCES_BELT = False
 
 # ============================================================
 # Optional sensors and outputs
@@ -413,8 +417,9 @@ def sort_coin(bin_name):
     if DIVERTER_ENABLED:
         # Pre-position BEFORE the coin tips off the roller nose.
         div_move_to(BIN_POSITIONS[bin_name])
-    belt_move(BELT_STEPS_PER_COIN)
-    time.sleep_ms(200)
+    if SORT_ADVANCES_BELT:
+        belt_move(BELT_STEPS_PER_COIN)
+        time.sleep_ms(200)
     if DIVERTER_ENABLED:
         div_release()
     return f"OK sorted {bin_name}"

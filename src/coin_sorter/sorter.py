@@ -28,6 +28,7 @@ import argparse
 import logging
 import sys
 import time
+from pathlib import Path
 
 from . import configure_logging, load_config
 from .infer import CoinClassifier
@@ -71,8 +72,22 @@ def _open_camera(
     return picam
 
 
-def run(cfg: dict, max_iters: int | None = None) -> None:
-    """Run the main loop. `max_iters` is for testing; None = forever."""
+def run(
+    cfg: dict,
+    max_iters: int | None = None,
+    belt_hz: int | None = None,
+    force_bin: str | None = None,
+    no_sort: bool = False,
+    save_crops: Path | None = None,
+) -> None:
+    """Run the main loop.
+
+    `max_iters` stops after N frames. The rest are bench-test aids:
+        belt_hz     free-run the belt at this rate (None = leave it alone)
+        force_bin   ignore the classifier and always sort here, for timing runs
+        no_sort     gate, crop and classify but never command the diverter
+        save_crops  write every crop the classifier saw, named with its verdict
+    """
     serial_cfg = cfg["serial"]
     sorter_cfg = cfg["sorter"]
     cam_cfg = cfg["camera"]
@@ -100,6 +115,9 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
     pad_frac = float(cap_params.get("crop_pad_frac", 0.25))
     crop_square = bool(cap_params.get("crop_square", True))
     gated = classified = 0
+    latencies: list[float] = []
+    if save_crops:
+        save_crops.mkdir(parents=True, exist_ok=True)
 
     if classifier.is_stub:
         log.warning(
@@ -130,7 +148,17 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
             if not pico.ping():
                 log.error("Pico did not respond to PING — continuing anyway so you can debug.")
             pico.enable()
-            log.info("Sorter loop starting. threshold=%.2f cooldown=%.3fs", threshold, cooldown_s)
+            if belt_hz:
+                # The trip-line gate needs coins in motion; SORT no longer
+                # halts the free-run (firmware SORT_ADVANCES_BELT = False).
+                pico.run(int(belt_hz))
+                log.info("Belt free-running at %d Hz", belt_hz)
+            log.info(
+                "Sorter loop starting. threshold=%.2f cooldown=%.3fs%s%s",
+                threshold, cooldown_s,
+                f" force_bin={force_bin}" if force_bin else "",
+                " NO-SORT" if no_sort else "",
+            )
 
             while max_iters is None or iters < max_iters:
                 t0 = time.monotonic()
@@ -149,17 +177,37 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
                         log.debug("coin at %s produced an empty crop; skipped", det.centroid)
                     else:
                         classified += 1
+                        t_trip = time.monotonic()
                         label, conf = classifier.predict(crop)
-                        log.info(
-                            "predict=%s conf=%.3f (centroid=%s fill=%.2f)",
-                            label, conf, det.centroid, det.fill,
-                        )
                         bin_ = label_to_bin.get(label, "check") if conf >= threshold else "check"
-                        try:
-                            pico.sort(bin_)
-                            time.sleep(cooldown_s)
-                        except PicoError as e:
-                            log.error("SORT %s (%s) failed: %s", bin_, label, e)
+                        if force_bin:
+                            bin_ = force_bin
+                        t_infer = time.monotonic() - t_trip
+                        if save_crops:
+                            import cv2
+
+                            name = f"{int(t_trip * 1000)}_{label}_{conf:.2f}_{bin_}.jpg"
+                            cv2.imwrite(str(save_crops / name), crop)
+                        if no_sort:
+                            log.info(
+                                "predict=%s conf=%.3f -> %s (NOT sent) "
+                                "infer=%.0fms centroid=%s fill=%.2f",
+                                label, conf, bin_, t_infer * 1000, det.centroid, det.fill,
+                            )
+                        else:
+                            try:
+                                pico.sort(bin_)
+                                total = time.monotonic() - t_trip
+                                latencies.append(total)
+                                log.info(
+                                    "predict=%s conf=%.3f -> %s  "
+                                    "infer=%.0fms trip->aimed=%.0fms centroid=%s fill=%.2f",
+                                    label, conf, bin_, t_infer * 1000, total * 1000,
+                                    det.centroid, det.fill,
+                                )
+                                time.sleep(cooldown_s)
+                            except PicoError as e:
+                                log.error("SORT %s (%s) failed: %s", bin_, label, e)
 
                 # Pace the loop to roughly inference_fps.
                 elapsed = time.monotonic() - t0
@@ -175,6 +223,21 @@ def run(cfg: dict, max_iters: int | None = None) -> None:
             "%d frames, %d with a coin present, %d classified/sorted.",
             iters, gated, classified,
         )
+        if latencies:
+            latencies.sort()
+            log.info(
+                "trip->aimed latency: min %.0f ms, median %.0f ms, max %.0f ms. "
+                "The dish must reach its bin before the coin reaches the nose; "
+                "compare against (trip-line -> nose distance) / belt speed.",
+                latencies[0] * 1000,
+                latencies[len(latencies) // 2] * 1000,
+                latencies[-1] * 1000,
+            )
+        if belt_hz:
+            try:
+                pico.stop()
+            except Exception:  # pragma: no cover
+                pass
         try:
             picam.stop()
         except Exception:  # pragma: no cover
@@ -189,6 +252,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run the coin sorter main loop.")
     p.add_argument("--config", default=None, help="Path to config.yaml.")
     p.add_argument("--max-iters", type=int, default=None, help="Stop after N frames (testing).")
+    p.add_argument("--belt-hz", type=int, default=None,
+                   help="Free-run the belt at this rate. Omit to leave it alone.")
+    p.add_argument("--force-bin", choices=("keep", "common", "check"), default=None,
+                   help="Ignore the classifier and always sort here (timing runs).")
+    p.add_argument("--no-sort", action="store_true",
+                   help="Gate, crop and classify, but never command the diverter.")
+    p.add_argument("--save-crops", type=Path, default=None,
+                   help="Write every crop the classifier saw, named with its verdict.")
     return p.parse_args(argv)
 
 
@@ -197,7 +268,14 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     args = _parse_args(argv)
     cfg = load_config(args.config)
-    run(cfg, max_iters=args.max_iters)
+    run(
+        cfg,
+        max_iters=args.max_iters,
+        belt_hz=args.belt_hz,
+        force_bin=args.force_bin,
+        no_sort=args.no_sort,
+        save_crops=args.save_crops,
+    )
     return 0
 
 
