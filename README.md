@@ -123,6 +123,8 @@ training time, applied uniformly to every class.
 On the rig it runs as a user systemd service (`deploy/coin-webcal.service`):
 
 ```bash
+scripts/webcal.sh install                 # once: install + enable at boot (sudo for linger)
+scripts/webcal.sh start|stop|restart|status|logs   # shorthand for the commands below
 systemctl --user restart coin-webcal      # after config.yaml / label changes
 systemctl --user stop coin-webcal         # before CLI capture or flashing the Pico
 journalctl --user -u coin-webcal -f       # logs
