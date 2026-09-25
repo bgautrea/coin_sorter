@@ -340,6 +340,56 @@ dataset:
         - ["_triage/partial",   "reject"]
         - ["_triage/overlap",   "reject"]
         - ["*",                 null]
+    # Pennies, one class per design. Prefer this over `pennies`: the model
+    # should be as fine-grained as the data allows and the GROUPING should
+    # happen at run time in the sorting panel. Baking keeper/common into the
+    # classes means retraining every time you want to hunt something else;
+    # here, isolating shield cents is three button clicks.
+    #
+    # penny_obverse is still its own class for the reason below: a Lincoln
+    # obverse is genuinely undecidable, so it belongs in the re-feed pile.
+    pennies_fine:
+      max_per_class: 300
+      rules:
+        - ["penny_memorial_*",  "penny_memorial"]
+        - ["penny_shield_*",    "penny_shield"]
+        - ["penny_wheat_rev",   "penny_wheat"]
+        - ["penny_indian_*",    "penny_indian"]
+        - ["penny_steel_*",     "penny_steel"]
+        - ["penny_lincoln_obv", "penny_obverse"]
+        - ["penny_wheat_obv",   "penny_obverse"]
+        - ["nickel*",           "reject"]
+        - ["dime*",             "reject"]
+        - ["_triage/cluster",   "reject"]
+        - ["_triage/partial",   "reject"]
+        - ["_triage/overlap",   "reject"]
+        - ["*",                 null]
+    # Pennies. The interesting one, because a cent's obverse is genuinely
+    # undecidable: wheat, memorial and shield all share the same Lincoln
+    # obverse and differ only by the date, which is ~10 px at imgsz 224. So
+    # `penny_obverse` is its own class -- an honest "this is a Lincoln cent,
+    # face up, and I cannot tell which" -- and it belongs in the recheck pile.
+    # Re-fed, that coin eventually lands reverse-up and gets decided. That is
+    # the whole multi-pass strategy, expressed as a class.
+    #
+    # penny_wheat_obv folds in there too: it IS a Lincoln obverse. Training it
+    # as a keeper would teach the model to read dates it cannot resolve.
+    pennies:
+      max_per_class: 300
+      rules:
+        - ["penny_wheat_rev",  "penny_keeper"]
+        - ["penny_indian_*",   "penny_keeper"]
+        - ["penny_steel_*",    "penny_keeper"]
+        - ["penny_memorial_*", "penny_common"]
+        - ["penny_shield_*",   "penny_common"]
+        - ["penny_lincoln_obv", "penny_obverse"]
+        - ["penny_wheat_obv",   "penny_obverse"]
+        - ["nickel*",          "reject"]        # not a penny
+        - ["dime*",            "reject"]
+        - ["_triage/cluster",  "reject"]
+        - ["_triage/partial",  "reject"]
+        - ["_triage/overlap",  "reject"]
+        - ["*",                null]
     # Nickels only: the first view that answers the question the machine is
     # actually for -- is this one worth keeping? Three classes matching three
     # bins, so the confidence threshold alone produces the "cannot tell" case.
