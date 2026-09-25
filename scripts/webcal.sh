@@ -27,7 +27,7 @@ case "${1:-status}" in
         sc "$1" "$unit"
         ;;
     logs)
-        journalctl --user -u "$unit" -f
+        journalctl --user-unit "$unit" -f
         ;;
     *)
         echo "usage: $0 {install|start|stop|restart|status|logs|enable|disable}" >&2

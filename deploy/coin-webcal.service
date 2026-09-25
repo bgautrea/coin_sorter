@@ -6,7 +6,7 @@
 #           systemctl --user enable --now coin-webcal
 #           sudo loginctl enable-linger $USER   # start at boot, not at login
 # Use:      systemctl --user restart coin-webcal     (after config/label changes)
-#           journalctl --user -u coin-webcal -f       (logs)
+#           journalctl --user-unit coin-webcal -f      (logs)
 # Note: webcal owns the camera and the Pico serial port -- stop it before the
 # CLI capture/calibrate tools or before flashing the Pico:
 #           systemctl --user stop coin-webcal

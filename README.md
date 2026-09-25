@@ -127,7 +127,7 @@ scripts/webcal.sh install                 # once: install + enable at boot (sudo
 scripts/webcal.sh start|stop|restart|status|logs   # shorthand for the commands below
 systemctl --user restart coin-webcal      # after config.yaml / label changes
 systemctl --user stop coin-webcal         # before CLI capture or flashing the Pico
-journalctl --user -u coin-webcal -f       # logs
+journalctl --user-unit coin-webcal -f      # logs
 python -m coin_sorter.webcal              # or run it by hand; http://<pi-ip>:8080/
 ```
 
