@@ -55,6 +55,83 @@ _pico_lock = threading.Lock()  # camera thread and feeder pulser share the Pico
 _raw_dir = [None]  # base directory for captured crops; set in main()
 _clf = [None]  # CoinClassifier, loaded on the first sorting session
 _cfg = [None]  # the loaded config, for routes that need it
+_model_path = [None]  # active .onnx; None = whatever config points at
+
+
+def _models_dir(cfg: dict) -> Path:
+    return Path((cfg.get("model") or {}).get("path", "models/x.onnx")).parent
+
+
+def _list_models(cfg: dict) -> list:
+    """Every .onnx alongside the configured one, with its embedded classes.
+
+    Class names come from the file, not config -- so switching model here is a
+    complete switch, including what the bins can be mapped to.
+    """
+    import ast
+
+    import onnxruntime as ort
+
+    out = []
+    d = _models_dir(cfg)
+    if not d.is_dir():
+        return out
+    for f in sorted(d.glob("*.onnx")):
+        labels = []
+        try:
+            meta = ort.InferenceSession(
+                str(f), providers=["CPUExecutionProvider"]
+            ).get_modelmeta().custom_metadata_map
+            names = ast.literal_eval(meta.get("names", "{}"))
+            labels = [names[i] for i in sorted(names)]
+        except Exception as e:  # pragma: no cover - unreadable model
+            log.warning("Could not read %s: %s", f.name, e)
+        out.append({"path": str(f), "name": f.name, "labels": labels})
+    return out
+
+
+def _seed_bin(label: str) -> str:
+    """First guess at a cup for a class we have not seen before.
+
+    Views name classes <denomination>_keeper / _common, so honour that and
+    leave everything else — including the deliberately undecidable
+    penny_obverse — in the re-feed pile. It is only a starting point; the
+    panel overrides it with one click.
+    """
+    if label.endswith("_keeper"):
+        return "keep"
+    if label.endswith("_common"):
+        return "reject"
+    return DEFAULT_BIN
+
+
+def _set_model(cfg: dict, path: str) -> list:
+    """Switch the active model and reseed the bin map for its classes.
+
+    Existing assignments are kept where the class name still exists, so
+    switching back and forth does not lose the mapping you just set.
+    """
+    from .infer import CoinClassifier
+
+    clf = CoinClassifier(
+        model_path=path,
+        labels=[],
+        input_size=int((cfg.get("model") or {}).get("input_size", 224)),
+        channel_order=(cfg.get("model") or {}).get("channel_order", "rgb"),
+    )
+    if clf.is_stub:
+        raise FileNotFoundError(path)
+    _clf[0] = clf
+    _model_path[0] = path
+    with _lock:
+        old = dict(_state["bin_map"])
+        _state["bin_map"] = {
+            lab: old.get(lab) or _seed_bin(lab) for lab in clf.labels
+        }
+        _state["sort_counts"] = {b: 0 for b, _s in BIN_SIDES} | {"missed": 0}
+        _state["last_sort"] = ""
+    log.info("Sorting model -> %s (%s)", path, ", ".join(clf.labels))
+    return list(clf.labels)
 
 
 def _get_classifier(cfg: dict):  # type: ignore[no-untyped-def]
@@ -67,6 +144,7 @@ def _get_classifier(cfg: dict):  # type: ignore[no-untyped-def]
         from .infer import CoinClassifier
 
         clf = CoinClassifier.from_config(cfg)
+        _model_path[0] = (cfg.get("model") or {}).get("path", "")
         if clf.is_stub:
             log.warning("No ONNX model — sorting would send everything to one bin.")
             return None
@@ -640,7 +718,8 @@ select#gallabel{background:#222;color:#eee;border:1px solid #555;padding:5px;bor
 <div id=sortpanel style="border:1px solid #333;padding:8px;margin:8px 0">
  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
   <button id=sortbtn onclick="toggleSort()">Start sorting</button>
-  <span id=sortmodel style="font-size:11px;color:#888"></span>
+  <select id=modelsel onchange="setModel(this.value)"
+          style="font-size:12px;max-width:260px"></select>
   <span id=sortstat style="font-size:12px;color:#9cf"></span>
  </div>
  <div id=sortmap style="margin-top:8px"></div>
@@ -758,10 +837,29 @@ function delCap(l,n,div){
   fetch('/capture_del?label='+encodeURIComponent(l)+'&name='+encodeURIComponent(n),{method:'POST'})
     .then(r=>{if(r.ok&&div)div.remove();});
 }
+function setModel(p){
+  fetch('/setmodel?path='+encodeURIComponent(p)).then(r=>r.json()).then(d=>{
+    if(!d.ok){alert('Could not load model: '+(d.error||'?'));}
+    renderModels(); renderSortMap();
+  });
+}
+function renderModels(){
+  return fetch('/models').then(r=>r.json()).then(d=>{
+    const sel=document.getElementById('modelsel'); sel.innerHTML='';
+    for(const m of d.models){
+      const o=document.createElement('option');
+      o.value=m.path;
+      o.textContent=m.name+(m.labels.length?('  ['+m.labels.length+' classes]'):'  [?]');
+      if(m.path===d.active)o.selected=true;
+      sel.appendChild(o);
+    }
+    if(!d.models.length){
+      const o=document.createElement('option');o.textContent='no models found';sel.appendChild(o);
+    }
+  });
+}
 function renderSortMap(){
   return fetch('/sortlabels').then(r=>r.json()).then(d=>{
-    document.getElementById('sortmodel').textContent =
-      d.stub ? 'no model loaded' : d.model;
     const box=document.getElementById('sortmap'); box.innerHTML='';
     for(const lab of d.labels){
       const row=document.createElement('div');
@@ -798,7 +896,7 @@ function paintSort(s){
 function init(s){LABELS=s.labels||[];
   document.getElementById('sortdelay').textContent=
     ((s.transport_delay_s||0)-(s.divert_lead_s||0)).toFixed(1);
-  renderSortMap(); paintSort(s);for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz','feeder_on_ms','feeder_period_ms']){
+  renderModels(); renderSortMap(); paintSort(s);for(const k of ['lens','red','blue','exp','gain','roi_x','roi_y','roi_w','roi_h','min_area','max_area','circ','ring','hz','feeder_hz','feeder_on_ms','feeder_period_ms']){
   const sk=(k==='exp')?'exp_us':k;
   const el=document.getElementById(k);if(el&&s[sk]!==undefined){el.value=s[sk];document.getElementById(k+'v').textContent=(+s[sk]).toFixed(2);}}
   document.getElementById('afauto').classList.toggle('active',s.focus_mode==='continuous');
@@ -953,6 +1051,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     _state["bin_map"][lab] = b
             self._send(200, "application/json",
                        json.dumps({"ok": ok, "label": lab, "bin": b}).encode())
+        elif u.path == "/models":
+            cfg = _cfg[0] or {}
+            active = _model_path[0] or (cfg.get("model") or {}).get("path", "")
+            self._send(200, "application/json", json.dumps(
+                {"models": _list_models(cfg), "active": str(active)}).encode())
+        elif u.path == "/setmodel":
+            want = q.get("path", [""])[0]
+            cfg = _cfg[0] or {}
+            allowed = {m["path"] for m in _list_models(cfg)}
+            if want not in allowed:
+                # Only files already sitting in the models dir; the path comes
+                # from the browser, so do not open whatever it asks for.
+                self._send(200, "application/json",
+                           json.dumps({"ok": False, "error": "unknown model"}).encode())
+            else:
+                try:
+                    labs = _set_model(cfg, want)
+                    self._send(200, "application/json",
+                               json.dumps({"ok": True, "labels": labs}).encode())
+                except Exception as e:
+                    self._send(200, "application/json",
+                               json.dumps({"ok": False, "error": str(e)}).encode())
         elif u.path == "/sortlabels":
             # Labels the loaded model actually emits, so the UI cannot offer a
             # mapping for a class this model will never predict.
@@ -963,7 +1083,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, "application/json", json.dumps({
                 "labels": labs, "bin_map": bm,
                 "sides": [{"bin": b, "side": sd} for b, sd in BIN_SIDES],
-                "model": (_cfg[0].get("model", {}) or {}).get("path", "") if _cfg[0] else "",
+                # The ACTIVE model, not what config points at -- they differ
+                # as soon as the dropdown is used.
+                "model": str(_model_path[0] or
+                             ((_cfg[0].get("model") or {}).get("path", "") if _cfg[0] else "")),
                 "stub": clf is None,
             }).encode())
         elif u.path == "/folders":

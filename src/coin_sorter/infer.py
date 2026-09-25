@@ -83,6 +83,36 @@ class CoinClassifier:
         log.info("Loading ONNX model %s with providers %s", path, providers)
         self._session = ort.InferenceSession(str(path), providers=list(providers))
         self._input_name = self._session.get_inputs()[0].name
+        self._adopt_embedded_labels(path)
+
+    def _adopt_embedded_labels(self, path: Path) -> None:
+        """Prefer the class names baked into the model over config.
+
+        Ultralytics writes `names` into the ONNX metadata, and that mapping is
+        ground truth: it is the index order the model was actually trained
+        with. config's classifier.labels is a hand-maintained copy of the same
+        thing, and when the two drift every prediction is silently mislabelled
+        -- the model is right, the name on it is wrong. Trusting the file also
+        means a model can be swapped at run time without editing config.
+        """
+        import ast
+
+        raw = self._session.get_modelmeta().custom_metadata_map.get("names")
+        if not raw:
+            log.info("%s has no embedded class names; using configured labels.", path.name)
+            return
+        try:
+            names = ast.literal_eval(raw)
+            embedded = [names[i] for i in sorted(names)]
+        except Exception as e:  # pragma: no cover - malformed metadata
+            log.warning("Could not read class names from %s: %s", path.name, e)
+            return
+        if self.labels and list(self.labels) != embedded:
+            log.warning(
+                "Class names in %s differ from configured labels; using the "
+                "model's. model=%s config=%s", path.name, embedded, list(self.labels),
+            )
+        self.labels = embedded
 
     @property
     def is_stub(self) -> bool:
