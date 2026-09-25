@@ -141,6 +141,11 @@ def default_state(cfg: dict) -> dict:
         "transport_delay_s": float(srt.get("transport_delay_s", 0.0)),
         "divert_lead_s": float(srt.get("divert_lead_s", 0.0)),
         "divert_hold_s": float(srt.get("divert_hold_s", 0.5)),
+        # How long the dish stays on a bin after aiming. Late tolerance is
+        # neutral_after_s - divert_lead_s, so this must exceed the lead or a
+        # coin arriving even slightly late finds the dish already back at
+        # centre and lands in the re-feed pile.
+        "neutral_after_s": float(srt.get("neutral_after_s", 1.0)),
         # live readout (written by the camera thread)
         "det": False, "area_frac": 0.0, "det_circ": 0.0, "sharp": 0.0, "meta": {},
     }
@@ -486,10 +491,11 @@ def camera_thread(cfg: dict, raw_dir: Path) -> None:
                         _state["sort_counts"][bin_] = _state["sort_counts"].get(bin_, 0) + 1
                         _state["in_flight"] = len(queue)
                 # park at neutral once the coin has cleared
+                hold_for = float(st["neutral_after_s"])
                 if (pico is not None and dish_bin not in (None, DEFAULT_BIN)
-                        and last_divert and now - last_divert >= 1.0):
+                        and last_divert and now - last_divert >= hold_for):
                     nxt = queue.next_due()
-                    if nxt is None or nxt - now > 1.0:
+                    if nxt is None or nxt - now > hold_for:
                         try:
                             pico.sort(DEFAULT_BIN)
                             dish_bin, last_divert = DEFAULT_BIN, None

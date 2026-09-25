@@ -185,10 +185,17 @@ sorter:
   # After a coin has passed, return the dish here. Defaults to default_bin,
   # which is the whole point: unscheduled arrivals land in the re-feed pile.
   neutral_bin: recheck
-  # How long after a divert to wait before returning to neutral: long enough
-  # for the coin to have left the dish. Skipped if another divert is due
-  # sooner, so a dense run does not bounce the servo back and forth.
-  neutral_after_s: 1.0
+  # How long after a divert to wait before returning to neutral. The dish is
+  # on target from (arrival - divert_lead_s) to (that + neutral_after_s), so:
+  #
+  #     late tolerance = neutral_after_s - divert_lead_s
+  #
+  # This must comfortably exceed the lead, or a coin arriving a little late
+  # finds the dish already back at centre and lands in the re-feed pile --
+  # which looks like "it moved too early" and is really "it let go too soon".
+  # Skipped if another divert is due sooner, so a dense run does not bounce
+  # the servo back and forth.
+  neutral_after_s: 1.75
   # How long the dish holds a bin before the next scheduled divert may move it.
   # Must exceed the servo settle (SERVO_SETTLE_MS in firmware, 300 ms) plus the
   # coin's fall; it bounds how closely spaced arrivals can be.
