@@ -315,6 +315,31 @@ dataset:
         - ["half*",    "half"]
         - ["reject*",  "reject"]
         - ["*",        null]
+    # Dimes, one class per design, same philosophy as pennies_fine.
+    #
+    # The trap is the wreath: Barber dimes (1892-1916) reused the Seated
+    # Liberty "ONE DIME" cereal-wreath reverse (1860-1891) unchanged, so those
+    # two reverses are the same design and genuinely undecidable. They get one
+    # class, `dime_wreath_rev`, rather than a coin-flip between two. Unlike
+    # penny_obverse it is not a re-feed case: both are 90% silver keepers, so
+    # it maps straight to keep. Barber and Seated are only split on the
+    # obverse, where they differ.
+    dimes_fine:
+      max_per_class: 300
+      rules:
+        - ["dime_roosevelt_*",  "dime_roosevelt"]
+        - ["dime_mercury_*",    "dime_mercury"]
+        - ["dime_barber_obv",   "dime_barber_obv"]
+        - ["dime_seated_obv",   "dime_seated_obv"]
+        - ["dime_barber_rev",   "dime_wreath_rev"]
+        - ["dime_seated_rev",   "dime_wreath_rev"]
+        - ["dime",              null]            # side-less, design unknown
+        - ["penny*",            "reject"]        # not a dime
+        - ["nickel*",           "reject"]
+        - ["_triage/cluster",   "reject"]
+        - ["_triage/partial",   "reject"]
+        - ["_triage/overlap",   "reject"]
+        - ["*",                 null]
     # Nickels only: the first view that answers the question the machine is
     # actually for -- is this one worth keeping? Three classes matching three
     # bins, so the confidence threshold alone produces the "cannot tell" case.

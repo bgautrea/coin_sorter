@@ -11,12 +11,44 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 from . import configure_logging, load_config
 
 log = logging.getLogger("coin_sorter.train")
+
+
+def _disable_pin_memory() -> None:
+    """Make ultralytics' dataloaders stop page-locking host memory.
+
+    On a unified-memory board (Jetson) pinning buys nothing and eventually
+    fails as "CUDA error: out of memory" in the pin-memory thread. Ultralytics
+    8.3.x no longer reads a PIN_MEMORY env var: ``build_dataloader`` takes a
+    ``pin_memory`` argument defaulting to True, and the classify trainer never
+    passes it. Callers bind the function by name at import, so rebinding the
+    module attribute would miss them -- change the default on the function
+    object itself, which every caller shares.
+    """
+    import inspect
+
+    from ultralytics.data import build as ul_build  # type: ignore[import-not-found]
+
+    fn = ul_build.build_dataloader
+    params = [p for p in inspect.signature(fn).parameters.values()
+              if p.default is not inspect.Parameter.empty]
+    names = [p.name for p in params]
+    if "pin_memory" not in names or fn.__defaults__ is None \
+            or len(fn.__defaults__) != len(names):
+        raise SystemExit(
+            "PIN_MEMORY=False requested but ultralytics.data.build.build_dataloader "
+            f"has an unexpected signature {names}; update _disable_pin_memory()."
+        )
+    defaults = list(fn.__defaults__)
+    defaults[names.index("pin_memory")] = False
+    fn.__defaults__ = tuple(defaults)
+    log.info("pin_memory disabled for ultralytics dataloaders")
 
 
 def train(
@@ -42,6 +74,9 @@ def train(
             "ultralytics is required for training. Install with: "
             "pip install '.[train]'"
         ) from e
+
+    if os.environ.get("PIN_MEMORY", "true").lower() == "false":
+        _disable_pin_memory()
 
     log.info("Loading base model: %s", base_model)
     model = YOLO(base_model)
