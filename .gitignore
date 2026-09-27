@@ -30,6 +30,7 @@ models/*
 # Dataset bundle built by scripts/zip_dataset.sh for upload to Drive.
 data.zip
 *.zip
+!hardware/coin_hat/fab/*.zip
 
 # Notebook scratch
 .ipynb_checkpoints/
