@@ -139,13 +139,22 @@ Two layers, 1 oz, every net routed. KiCad 9 DRC: 0 violations, 0 unconnected,
 | Ground | GND (the pours carry the current) | 0.35 mm |
 | Default | signals | 0.25 mm / 0.2 mm space |
 
-Vias are 0.6/0.3 mm (0.8/0.4 mm on power nets). GND is poured on both layers.
+Signal vias are 0.6/0.3 mm. Power-net vias are 1.2/0.6 mm (about 3 A each),
+except one 0.8/0.4 mm AUX_SW via in a tight spot, so rate J12 (aux 12 V out) at
+about 1.5 A. GND is poured on both layers. Five GND pads connect solid to the
+pour rather than through thermal spokes: U3.7, J10.2, J1.14, C6.2 and one Pico
+GND pad. Give those a hotter iron.
+
 Freerouting did the autorouting, except for the Pi 5 V feed, which is
 hand-placed and locked. J1 pins 2/4 are boxed in by the mounting hole, the board
 edge and the other header pins, so the feed runs 1.5 mm on F.Cu from U5 VOUT,
-passes under the hole in a channel opened by dropping the Pico 1.5 mm, and
-necks to 1.0 mm for the last ~3 mm beside pin 1. Official HAT+ boards squeeze
-through the same gap.
+passes under the hole, and necks to 1.0 mm for the last ~3 mm beside pin 1.
+Official HAT+ boards squeeze through the same gap.
+
+The Pico sits with its USB socket at the board's right edge, so a micro-USB
+cable plugs in for REPL and `mpremote`. The HAT+ ID EEPROM group (U7,
+R10–R12, JP1, C8) sits in the pocket left of the Pico. U6 and U7 each have a
+100 nF bypass cap (C7, C8).
 
 Silkscreen: labels for JLCPCB-placed parts are on F.Fab only (the placement
 file carries them). JP21/22/23 and JP32/33 had no room for a readable label, so
@@ -174,11 +183,23 @@ Check before you pay:
   differently. The CPL applies the usual corrections (SOT-23 / SC-70 +180°,
   SOIC +270°), but check every part, and especially the cathode bars on
   D1–D4 and the LED.
-- U1 (Pico) and the solder jumpers are deliberately left out of assembly. You
-  solder the Pico by its castellations.
-- Hand-soldered: J1 is a 2×20 female socket tall enough for your 16 mm
-  spacers (not in the BOMs). The StepStick sockets are 2× 1×8 female headers
-  per driver.
+- U1 (Pico) and the solder jumpers are deliberately left out of assembly. The
+  Pico's pads have no paste, so the stencil leaves them bare. You solder the
+  Pico by its castellations. KiCad DRC reports U1 as "differs from library"
+  for that reason. That warning is expected.
+- Hand-soldered: J1 is a 2×20, 2.54 mm female socket on the **bottom** side.
+  It is not in the BOMs, and its height matters. With 16 mm spacers, the Pi's
+  pins (8.5 mm tall) only engage a socket body of H mm by H − 7.5 mm, so a
+  standard 8.5 mm socket barely touches. Use an 11–13 mm tall socket. The
+  StepStick sockets are 2× 1×8 female headers per driver.
+- Trim through-hole leads flush over the Pi (J6/J7/J9–J12). The Active Cooler
+  sits under that area, and the HAT+ spec asks for extra clearance if the
+  underside isn't flat.
+- Power only through the 12 V jack while the HAT is fitted. U5 feeds the Pi's
+  5 V rail directly, with nothing to stop backfeed if the Pi's USB-C is also
+  plugged in. U5 also regulates to 5.0 V, not the 5.1 V the Pi's own supply
+  gives. That's fine, but it leaves less headroom before the under-voltage
+  warning if a heavy USB load is attached.
 
 ## Verify before ordering
 

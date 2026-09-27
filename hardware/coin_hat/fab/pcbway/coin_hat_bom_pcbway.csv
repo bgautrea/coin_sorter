@@ -3,31 +3,33 @@ Item #,Designator,Qty,Manufacturer,Mfg Part #,Description / Value,Package/Footpr
 2,C2,1,,,100u/10V,CP_Radial_D8.0mm_P3.50mm,THT/module,Do not assemble - customer solders
 3,"C3,C4",2,,,100u/25V,CP_Radial_D8.0mm_P3.50mm,THT/module,Do not assemble - customer solders
 4,C6,1,,,1000u/16V (at J4),CP_Radial_D10.0mm_P5.00mm,THT/module,Do not assemble - customer solders
-5,"D1,D3,D4",3,MDD,SS34,SS34,D_SMA,SMD,Assemble (LCSC C8678)
-6,D2,1,,SMBJ15A,SMBJ15A,D_SMB,SMD,Assemble (LCSC C19077569)
-7,D5,1,XINGLIGHT,XL-1608UGC-04,green (servo rail live),LED_0603_1608Metric,SMD,Assemble (LCSC C965804)
-8,F1,1,Keystone,3568 holder + 4 A mini blade fuse,4 A mini blade,Fuseholder_Blade_Mini_Keystone_3568,THT/module,Do not assemble - customer solders
-9,J1,1,,,Pi 40-pin (bottom side),PinSocket_2x20_P2.54mm_Vertical,THT/module,Do not assemble - customer solders
-10,J2,1,JST,B4B-XH-A(LF)(SN),Belt motor,JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144395)
-11,J3,1,JST,B4B-XH-A(LF)(SN),Feeder motor,JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144395)
-12,J4,1,,,Diverter servo (1 SIG / 2 V+ / 3 GND),PinHeader_1x03_P2.54mm_Vertical,THT/module,Do not assemble - customer solders
-13,J5,1,CUI Devices,PJ-102AH,"12 V in 5.5/2.1 (CUI PJ-102AH, 5 A)",BarrelJack_CUI_PJ-102AH_Horizontal,THT/module,Do not assemble - customer solders (LCSC C3096093)
-14,J6,1,JST,B3B-XH-A(LF)(SN),LED ring (WS2812),JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144394)
-15,J7,1,JST,B2B-XH-A(LF)(SN),Key light 12V switched,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C158012)
-16,J9,1,JST,B2B-XH-A(LF)(SN),Home: feeder,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C158012)
-17,J10,1,JST,B3B-XH-A(LF)(SN),Coin sensor,JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144394)
-18,J11,1,,,Aux header,PinHeader_1x08_P2.54mm_Vertical,THT/module,Do not assemble - customer solders
-19,J12,1,JST,B2B-XH-A(LF)(SN),Aux 12V switched,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C158012)
-20,"Q1,Q2,Q3",3,Alpha & Omega,AO3400A,AO3400,SOT-23,SMD,Assemble (LCSC C20917)
-21,"R1,R8,R15",3,UNI-ROYAL,0603WAF1001T5E,1k,R_0603_1608Metric,SMD,Assemble (LCSC C21190)
-22,"R3,R5",2,UNI-ROYAL,0603WAF1000T5E,100R,R_0603_1608Metric,SMD,Assemble (LCSC C22775)
-23,"R4,R6,R9,R16,R17",5,UNI-ROYAL,0603WAF1002T5E,10k,R_0603_1608Metric,SMD,Assemble (LCSC C25804)
-24,"R10,R11",2,UNI-ROYAL,0603WAF3901T5E,3k9,R_0603_1608Metric,SMD,Assemble (LCSC C23018)
-25,"R12,R13",2,UNI-ROYAL,0603WAF1003T5E,100k,R_0603_1608Metric,SMD,Assemble (LCSC C25803)
-26,R14,1,UNI-ROYAL,0603WAF1502T5E,15k,R_0603_1608Metric,SMD,Assemble (LCSC C22809)
-27,U1,1,Raspberry Pi,Raspberry Pi Pico (SC0915),Raspberry Pi Pico,RaspberryPi_Pico_SMD_HandSolder,THT/module,Do not assemble - customer solders
-28,"U2,U3",2,,,StepStick (TMC2209 or A4988),Pololu_Breakout-16_15.2x20.3mm,THT/module,Do not assemble - customer solders
-29,U5,1,Pololu,D24V50F5 (#2851),Pololu D24V50F5 (12V->5V 5A),Pololu_D24V50F5,THT/module,Do not assemble - customer solders
-30,U6,1,Texas Instruments,SN74AHCT1G125DCKR,74AHCT1G125,SOT-353_SC-70-5,SMD,Assemble (LCSC C350557)
-31,U7,1,STMicroelectronics,M24C32-RMN6TP,M24C32-RMN6TP,SOIC-8_3.9x4.9mm_P1.27mm,SMD,Assemble (LCSC C79920)
-32,U8,1,Pololu,D36V28F6 (#3783),Pololu D36V28F6 (12V->6V servo) or F5,Pololu_D36V28Fx,THT/module,Do not assemble - customer solders
+5,C7,1,YAGEO,CC0603KRX7R9BB104,100n (U6 bypass),C_0603_1608Metric,SMD,Assemble (LCSC C14663)
+6,C8,1,YAGEO,CC0603KRX7R9BB104,100n (U7 bypass),C_0603_1608Metric,SMD,Assemble (LCSC C14663)
+7,"D1,D3,D4",3,MDD,SS34,SS34,D_SMA,SMD,Assemble (LCSC C8678)
+8,D2,1,,SMBJ15A,SMBJ15A,D_SMB,SMD,Assemble (LCSC C19077569)
+9,D5,1,XINGLIGHT,XL-1608UGC-04,green (servo rail live),LED_0603_1608Metric,SMD,Assemble (LCSC C965804)
+10,F1,1,Keystone,3568 holder + 4 A mini blade fuse,4 A mini blade,Fuseholder_Blade_Mini_Keystone_3568,THT/module,Do not assemble - customer solders
+11,J1,1,,,Pi 40-pin (bottom side),PinSocket_2x20_P2.54mm_Vertical,THT/module,Do not assemble - customer solders
+12,J2,1,JST,B4B-XH-A(LF)(SN),Belt motor,JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144395)
+13,J3,1,JST,B4B-XH-A(LF)(SN),Feeder motor,JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144395)
+14,J4,1,,,Diverter servo (1 SIG / 2 V+ / 3 GND),PinHeader_1x03_P2.54mm_Vertical,THT/module,Do not assemble - customer solders
+15,J5,1,CUI Devices,PJ-102AH,"12 V in 5.5/2.1 (CUI PJ-102AH, 5 A)",BarrelJack_CUI_PJ-102AH_Horizontal,THT/module,Do not assemble - customer solders (LCSC C3096093)
+16,J6,1,JST,B3B-XH-A(LF)(SN),LED ring (WS2812),JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144394)
+17,J7,1,JST,B2B-XH-A(LF)(SN),Key light 12V switched,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C158012)
+18,J9,1,JST,B2B-XH-A(LF)(SN),Home: feeder,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C158012)
+19,J10,1,JST,B3B-XH-A(LF)(SN),Coin sensor,JST_XH_B3B-XH-A_1x03_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C144394)
+20,J11,1,,,Aux header,PinHeader_1x08_P2.54mm_Vertical,THT/module,Do not assemble - customer solders
+21,J12,1,JST,B2B-XH-A(LF)(SN),Aux 12V switched,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,THT/module,Do not assemble - customer solders (LCSC C158012)
+22,"Q1,Q2,Q3",3,Alpha & Omega,AO3400A,AO3400,SOT-23,SMD,Assemble (LCSC C20917)
+23,"R1,R8,R15",3,UNI-ROYAL,0603WAF1001T5E,1k,R_0603_1608Metric,SMD,Assemble (LCSC C21190)
+24,"R3,R5",2,UNI-ROYAL,0603WAF1000T5E,100R,R_0603_1608Metric,SMD,Assemble (LCSC C22775)
+25,"R4,R6,R9,R16,R17",5,UNI-ROYAL,0603WAF1002T5E,10k,R_0603_1608Metric,SMD,Assemble (LCSC C25804)
+26,"R10,R11",2,UNI-ROYAL,0603WAF3901T5E,3k9,R_0603_1608Metric,SMD,Assemble (LCSC C23018)
+27,"R12,R13",2,UNI-ROYAL,0603WAF1003T5E,100k,R_0603_1608Metric,SMD,Assemble (LCSC C25803)
+28,R14,1,UNI-ROYAL,0603WAF1502T5E,15k,R_0603_1608Metric,SMD,Assemble (LCSC C22809)
+29,U1,1,Raspberry Pi,Raspberry Pi Pico (SC0915),Raspberry Pi Pico,RaspberryPi_Pico_SMD_HandSolder,THT/module,Do not assemble - customer solders
+30,"U2,U3",2,,,StepStick (TMC2209 or A4988),Pololu_Breakout-16_15.2x20.3mm,THT/module,Do not assemble - customer solders
+31,U5,1,Pololu,D24V50F5 (#2851),Pololu D24V50F5 (12V->5V 5A),Pololu_D24V50F5,THT/module,Do not assemble - customer solders
+32,U6,1,Texas Instruments,SN74AHCT1G125DCKR,74AHCT1G125,SOT-353_SC-70-5,SMD,Assemble (LCSC C350557)
+33,U7,1,STMicroelectronics,M24C32-RMN6TP,M24C32-RMN6TP,SOIC-8_3.9x4.9mm_P1.27mm,SMD,Assemble (LCSC C79920)
+34,U8,1,Pololu,D36V28F6 (#3783),Pololu D36V28F6 (12V->6V servo) or F5,Pololu_D36V28Fx,THT/module,Do not assemble - customer solders

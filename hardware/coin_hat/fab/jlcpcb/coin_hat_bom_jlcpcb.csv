@@ -1,4 +1,6 @@
 Comment,Designator,Footprint,LCSC Part #
+100n (U6 bypass),C7,C_0603_1608Metric,C14663
+100n (U7 bypass),C8,C_0603_1608Metric,C14663
 SS34,"D1,D3,D4",D_SMA,C8678
 SMBJ15A,D2,D_SMB,C19077569
 green (servo rail live),D5,LED_0603_1608Metric,C965804
