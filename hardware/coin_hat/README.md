@@ -6,10 +6,10 @@ sockets (TMC2209 or A4988, selected by solder jumpers) for belt and feeder, the
 MG996R diverter servo on its own buck, switched 12 V outputs, and the small
 stuff (LED ring level shifter, feeder home switch, coin sensor, HAT+ ID EEPROM).
 
-The board runs **lengthwise** along the Pi: 109 × 56.5 mm, the same width as the
-Pi. The HAT+ holes and header sit at one end, and a 44 mm overhang runs past the
+The board runs **lengthwise** along the Pi: 122 × 56.5 mm, the same width as the
+Pi. The HAT+ holes and header sit at one end, and a 57 mm overhang runs past the
 Pi's SD-card / PCIe end, so the drivers, jack and bucks sit over nothing. The
-Pi + HAT stack is 129 × 56.5 mm, a slim box instead of rev 0's 85 × 90. The
+Pi + HAT stack is 142 × 56.5 mm, a slim box instead of rev 0's 85 × 90. The
 overhang goes off the SD end, not the USB end: at 16 mm spacer height, a board
 over the USB/Ethernet jacks would sit on top of the plugs.
 
@@ -36,15 +36,31 @@ function. Redraw with wires or leave it — KiCad is happy either way.
 - **Header position fixed.** Rev 0 had it 1.27 mm off in both axes. HAT+ spec:
   the header centre is 29 mm from the left hole, on the hole line, so pin 1 is
   at (8.37, 4.77) from the Pi corner and pin 2 is at (8.37, 2.23).
+- **Diode polarity fixed.** KiCad diode and LED footprints put the cathode on
+  pad 1, and rev 0's symbols had the anode on pin 1. D3/D4 flybacks would have
+  shorted 12 V to ground when the key light or aux output switched on, D1
+  would have blocked the Pico's VSYS, and D5 would never light.
+- **StepStick pin numbering fixed.** Rev 0's symbol numbered pins 1 = EN …
+  16 = GND. The `Pololu_Breakout-16` footprint is 1 = GND, 2 = VDD, 3–6 = motor,
+  7 = GND, 8 = VMOT, 9 = EN … 16 = DIR, so every driver pin would have landed
+  on the wrong pad.
+- **Verified with KiCad 9:** ERC shows 0 errors (the remaining warnings are
+  off-grid pins and the embedded `coin_hat` symbol library). Every symbol pin
+  number exists as a pad on its footprint, and there are no single-node nets.
+  DRC on the outline shows 0 violations. The floor plan on `User.Comments` is
+  the real courtyards (buck modules as their 17.8 × 20.3 boards), checked for
+  overlaps, holes, header and notch. 57 mm is the shortest overhang that packs
+  cleanly; 52 mm clashes.
 
 ## Files
 
 - `coin_hat.kicad_pro` / `coin_hat.kicad_sch` — open this. Symbols are embedded;
   footprints point at the stock KiCad 8 libraries. **Tools → Update PCB from
   Schematic** pulls all footprints into the board.
-- `coin_hat.kicad_pcb` — 109 × 56.5 outline with the FPC notch, HAT+ hole
-  pattern and header marks at the right end, and dashed placement zones with
-  notes on `User.Comments`. No footprints yet (see above).
+- `coin_hat.kicad_pcb` — 122 × 56.5 outline with the FPC notch, HAT+ hole
+  pattern and header marks at the right end, and a dashed floor plan (one box
+  per part, real courtyard size) on `User.Comments`. No footprints yet (see
+  above).
 
 ## Pin map (Pico)
 
@@ -94,9 +110,10 @@ at 12 V).
   board.
 - The Pi 5 PCIe FFC connector sits under the overhang near the Pi edge. It is
   unused here, and a flat cable would still pass under a 16 mm-high board.
-- The zones in the overhang are a starting split. The motor, servo and jack
-  connectors go toward the left end so a case can have one connector wall.
-  The 44 mm overhang is sized to rev 0's area; shrink it once parts are placed.
+- The floor plan puts the motor connectors, fuse and jack on the left end so
+  a case can have one connector wall. It is 69% full. If routing leaves room,
+  swapping the mini-blade fuse holder (16.6 × 7.3) for an SMD fuse is the
+  easiest way to shorten the board.
 
 ## Verify before ordering
 
@@ -107,8 +124,11 @@ at 12 V).
   address (belt 00, feeder 10). **A4988** — JPx3=B (MS3 high), JPx4=B (RESET
   tied to SLEEP), JPx1+JPx2 closed = 1/16 step; set Vref = I × 8 × Rsense
   (0.40 V for 0.5 A with R100 sense resistors); heatsink.
-- Buck module pin order — U5 and U8 are drawn as generic 5-pin headers
-  (VIN, GND, VOUT, SHDN, PG). Check against the Pololu pinout.
+- **Buck module footprints — must be redrawn.** U5 and U8 are drawn as a
+  generic 1×5 header (VIN, GND, VOUT, SHDN, PG), and neither Pololu module
+  matches it. The D24V50F5 has 5 pads (EN, VIN, 2× GND, VOUT) and no PG. The
+  D36V28Fx has 6 connections, with PG the only one off the edge row. Draw
+  both from Pololu's dimension diagrams; both boards are 17.8 × 20.3 mm.
 - J4 pin order vs your servo plug (usual order: signal, V+, GND; brown wire =
   GND).
 - Header, holes and FPC notch against the official Pi 5 mechanical drawing. The
