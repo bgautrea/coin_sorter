@@ -1,6 +1,6 @@
-# Coin sorter HAT+ — rev 1 sketch
+# Coin sorter HAT+ — rev 1
 
-KiCad 8 starting point for a Pi 5 HAT+ that carries the whole motion side of the
+KiCad project for a Pi 5 HAT+ that carries the whole motion side of the
 sorter: 12 V in, buck to 5 V for the Pi, a Raspberry Pi Pico, two StepStick
 sockets (TMC2209 or A4988, selected by solder jumpers) for belt and feeder, the
 MG996R diverter servo on its own buck, switched 12 V outputs, and the small
@@ -66,10 +66,11 @@ function. Redraw with wires or leave it — KiCad is happy either way.
   - Both: #2 (2.2 mm) mounting holes in opposite corners.
   EN is left open on both (each module has a 100 kΩ pull-up to VIN), and PG
   is unused.
-- `coin_hat.kicad_pcb` — 122 × 56.5 outline with the FPC notch, HAT+ hole
-  pattern and header marks at the right end, and a dashed floor plan (one box
-  per part, real courtyard size) on `User.Comments`. No footprints yet (see
-  above).
+- `coin_hat.kicad_pcb` — placed and fully routed 2-layer board, 122 × 56.5 mm
+  (see Routing).
+- `make_fab.py` — regenerates everything in `fab/` from the schematic and board
+  (`python3 hardware/coin_hat/make_fab.py`).
+- `fab/` — ready to upload (see Ordering).
 
 ## Pin map (Pico)
 
@@ -119,10 +120,65 @@ at 12 V).
   board.
 - The Pi 5 PCIe FFC connector sits under the overhang near the Pi edge. It is
   unused here, and a flat cable would still pass under a 16 mm-high board.
-- The floor plan puts the motor connectors, fuse and jack on the left end so
-  a case can have one connector wall. It is 69% full. If routing leaves room,
-  swapping the mini-blade fuse holder (16.6 × 7.3) for an SMD fuse is the
-  easiest way to shorten the board.
+- The motor connectors, fuse and jack are on the left end so a case can have
+  one connector wall. J5 is a CUI PJ-102AH (5 A, 5.5 × 2.1 plug).
+- Copper keepouts around the four HAT+ holes: 3.1 mm radius on the bottom,
+  where the metal standoff sits (and is likely tied to the Pi's ground), and
+  2.6 mm on top, under the screw head.
+
+## Routing
+
+Two layers, 1 oz, every net routed. KiCad 9 DRC: 0 violations, 0 unconnected,
+0 schematic-parity issues.
+
+| Net class | Nets | Track |
+|---|---|---|
+| HighCurrent | VIN_RAW, +12V, +5V | 1.5 mm |
+| Power | +SERVO, VSYS_PICO, switched 12 V outputs | 1.0 mm |
+| Motor | stepper coil nets | 0.6 mm |
+| Ground | GND (the pours carry the current) | 0.35 mm |
+| Default | signals | 0.25 mm / 0.2 mm space |
+
+Vias are 0.6/0.3 mm (0.8/0.4 mm on power nets). GND is poured on both layers.
+Freerouting did the autorouting, except for the Pi 5 V feed, which is
+hand-placed and locked. J1 pins 2/4 are boxed in by the mounting hole, the board
+edge and the other header pins, so the feed runs 1.5 mm on F.Cu from U5 VOUT,
+passes under the hole in a channel opened by dropping the Pico 1.5 mm, and
+necks to 1.0 mm for the last ~3 mm beside pin 1. Official HAT+ boards squeeze
+through the same gap.
+
+Silkscreen: labels for JLCPCB-placed parts are on F.Fab only (the placement
+file carries them). JP21/22/23 and JP32/33 had no room for a readable label, so
+read the jumper columns top to bottom: JP21→JP24 beside U2 (belt) and JP31→JP34
+beside U3 (feeder). JP24, JP31 and JP34 are labelled, and the 2-pad MS1/MS2
+jumpers sit above the 3-pad ones.
+
+## Ordering
+
+Everything is in `fab/`:
+
+- `coin_hat_gerbers.zip` — Gerbers + Excellon drill (separate PTH/NPTH). Both
+  fabs take it. Specs: 2 layers, 122 × 56.5 mm, 1.6 mm FR-4, 1 oz, smallest
+  drill 0.3 mm, track/space 0.25/0.2 mm. Standard capabilities at both.
+- **JLCPCB** — `jlcpcb/coin_hat_bom_jlcpcb.csv` + `jlcpcb/coin_hat_cpl_jlcpcb.csv`.
+  Assembly: top side only, 25 placements, 12 unique parts. All resistors,
+  the AO3400A and the SS34 are Basic parts. The SMBJ15A is "preferred
+  extended" (no setup fee). The level shifter, EEPROM and LED are Extended
+  (JLC's per-part loading fee).
+- **PCBWay** — `pcbway/coin_hat_bom_pcbway.csv` (every part, with through-hole
+  lines marked "customer solders") + `pcbway/coin_hat_centroid_pcbway.csv`.
+
+Check before you pay:
+
+- **JLCPCB's placement preview.** KiCad and JLC orient some packages
+  differently. The CPL applies the usual corrections (SOT-23 / SC-70 +180°,
+  SOIC +270°), but check every part, and especially the cathode bars on
+  D1–D4 and the LED.
+- U1 (Pico) and the solder jumpers are deliberately left out of assembly. You
+  solder the Pico by its castellations.
+- Hand-soldered: J1 is a 2×20 female socket tall enough for your 16 mm
+  spacers (not in the BOMs). The StepStick sockets are 2× 1×8 female headers
+  per driver.
 
 ## Verify before ordering
 
