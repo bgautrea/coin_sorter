@@ -57,6 +57,15 @@ function. Redraw with wires or leave it — KiCad is happy either way.
 - `coin_hat.kicad_pro` / `coin_hat.kicad_sch` — open this. Symbols are embedded;
   footprints point at the stock KiCad 8 libraries. **Tools → Update PCB from
   Schematic** pulls all footprints into the board.
+- `coin_hat.pretty/` + `fp-lib-table` — project footprint library with the
+  two Pololu buck modules. Pad and mounting-hole positions come from Pololu's
+  drill-guide DXFs (`reg15d01-drill.dxf` for the D24V50F5, `reg24g-drill.dxf`
+  for the D36V28Fx), drawn top view with pad 1 = EN (square):
+  - D24V50F5: one row EN, VIN, GND, GND, VOUT along a 0.7" edge.
+  - D36V28Fx: the same row, plus PG 0.1" inboard of EN.
+  - Both: #2 (2.2 mm) mounting holes in opposite corners.
+  EN is left open on both (each module has a 100 kΩ pull-up to VIN), and PG
+  is unused.
 - `coin_hat.kicad_pcb` — 122 × 56.5 outline with the FPC notch, HAT+ hole
   pattern and header marks at the right end, and a dashed floor plan (one box
   per part, real courtyard size) on `User.Comments`. No footprints yet (see
@@ -94,7 +103,7 @@ Jack → F1 (mini blade) → +12 V bus. The bus feeds:
   through D1;
 - U8 (12 → 5–6 V, ~3 A module) → +SERVO → J4.
 
-Pololu D36V28F5 (5 V) or D36V28F6 (6 V) fits U8's 5-pin footprint. The MG996R
+U5 is a Pololu D24V50F5. For U8, any D36V28Fx fits the same footprint: the F5 (5 V) or the F6 (6 V). The MG996R
 is rated 4.8–7.2 V, and 6 V gives more torque than the 5.4 V bench supply.
 
 Feeding a Pi 5 over the header skips USB-PD, so set `usb_max_current_enable=1`
@@ -124,11 +133,8 @@ at 12 V).
   address (belt 00, feeder 10). **A4988** — JPx3=B (MS3 high), JPx4=B (RESET
   tied to SLEEP), JPx1+JPx2 closed = 1/16 step; set Vref = I × 8 × Rsense
   (0.40 V for 0.5 A with R100 sense resistors); heatsink.
-- **Buck module footprints — must be redrawn.** U5 and U8 are drawn as a
-  generic 1×5 header (VIN, GND, VOUT, SHDN, PG), and neither Pololu module
-  matches it. The D24V50F5 has 5 pads (EN, VIN, 2× GND, VOUT) and no PG. The
-  D36V28Fx has 6 connections, with PG the only one off the edge row. Draw
-  both from Pololu's dimension diagrams; both boards are 17.8 × 20.3 mm.
+- Buck modules sit on 0.1" header pins in the `coin_hat:Pololu_*` footprints.
+  Order the modules with their header strip, or use a low-profile socket.
 - J4 pin order vs your servo plug (usual order: signal, V+, GND; brown wire =
   GND).
 - Header, holes and FPC notch against the official Pi 5 mechanical drawing. The

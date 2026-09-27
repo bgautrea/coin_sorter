@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "coin_hat")(type "KiCad")(uri "${KIPRJMOD}/coin_hat.pretty")(options "")(descr "Project footprints: Pololu regulator modules"))
+)
