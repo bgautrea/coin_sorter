@@ -46,3 +46,6 @@ config.local.yaml
 # Logs
 *.log
 logs/
+
+# KiCad per-user view state
+*.kicad_prl
